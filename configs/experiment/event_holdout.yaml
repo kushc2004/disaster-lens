@@ -1,0 +1,7 @@
+split:
+  strategy: event_holdout
+  seed: 42
+  train_events: []
+  val_events: []
+  test_events: []
+
