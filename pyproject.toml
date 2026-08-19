@@ -26,4 +26,3 @@ packages = ["src/disasterlens"]
 addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["src"]
-

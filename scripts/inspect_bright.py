@@ -14,7 +14,7 @@ from disasterlens.data.schemas import BRIGHT_V1
 
 def main() -> None:
     config = load_yaml(ROOT / "configs/data/bright.yaml", sys.argv[1:])
-    samples = audit_bright(config["root"], BRIGHT_V1, ROOT / "outputs")
+    samples = audit_bright(config["root"], BRIGHT_V1, ROOT / "outputs", ROOT / config["normalization_stats_path"])
     print(f"Audited {len(samples)} BRIGHT samples; report: outputs/reports/bright_data_audit.md")
 
 

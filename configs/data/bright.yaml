@@ -1,6 +1,7 @@
 name: bright
 root: ${oc.env:DISASTERLENS_BRIGHT_ROOT,data/raw/bright}
 manifest_path: data/manifests/bright_manifest.jsonl
+normalization_stats_path: data/manifests/bright_normalization.json
 official_split_root: null
 expected_modalities:
   pre_optical: pre-event
@@ -11,11 +12,6 @@ label_ids: [0, 1, 2, 3]
 ignore_ids: [255]
 normalization:
   pre_optical:
-    mode: scale_uint
-    mean: [0.485, 0.456, 0.406]
-    std: [0.229, 0.224, 0.225]
+    mode: zscore
   post_sar:
     mode: zscore
-    mean: [0.0]
-    std: [1.0]
-

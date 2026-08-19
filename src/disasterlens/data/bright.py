@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import Any, Sequence
 
 import numpy as np
@@ -94,3 +95,34 @@ def collate_samples(batch: list[dict[str, Any]]) -> dict[str, Any]:
     return {"images": images, "mask": torch.stack([item["mask"] for item in batch]),
             "event_id": [item["event_id"] for item in batch], "tile_id": [item["tile_id"] for item in batch],
             "geo": [item["geo"] for item in batch]}
+
+
+def class_weights_from_training_samples(samples: Sequence[DisasterSample], schema: LabelSchema = BRIGHT_V1) -> np.ndarray:
+    """Inverse-frequency class weights computed from training masks only."""
+    counts = np.zeros(len(schema.classes), dtype=np.float64)
+    class_ids = sorted(schema.classes)
+    for sample in samples:
+        if sample.label is None:
+            raise ValueError(f"Sample has no label: {sample.tile_id}")
+        mask = BrightDataset._read(sample.label, channels=1)[0]
+        schema.validate(mask)
+        for index, class_id in enumerate(class_ids):
+            counts[index] += np.count_nonzero(mask == class_id)
+    if np.any(counts == 0):
+        raise ValueError(f"Cannot compute class weights: a training class is absent ({counts.tolist()})")
+    weights = counts.sum() / (len(counts) * counts)
+    return (weights / weights.mean()).astype(np.float32)
+
+
+def normalization_from_stats(config: dict[str, Any], stats_path: str | Path) -> dict[str, Any]:
+    """Attach real audit mean/std values to the configured z-score transforms."""
+    path = Path(stats_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Missing BRIGHT normalization statistics: {path}. Run scripts/inspect_bright.py on the official data first.")
+    stats = json.loads(path.read_text(encoding="utf-8"))
+    resolved = {name: dict(values) for name, values in config.items()}
+    for modality in ("pre_optical", "post_sar"):
+        if modality not in stats:
+            raise ValueError(f"Normalization audit does not contain {modality}")
+        resolved.setdefault(modality, {}).update({"mean": stats[modality]["mean"], "std": stats[modality]["std"]})
+    return resolved
