@@ -57,7 +57,10 @@ def audit_bright(root: str | Path, schema: LabelSchema, output_dir: str | Path,
     import matplotlib.pyplot as plt
     import rasterio
 
-    samples = build_bright_manifest(Path(root))
+    samples = build_bright_manifest(
+        Path(root),
+        progress=lambda done, total: print(f"[manifest] checked {done:,}/{total:,} tiles", flush=True),
+    )
     output_dir = Path(output_dir)
     figures, reports = output_dir / "figures", output_dir / "reports"
     figures.mkdir(parents=True, exist_ok=True)
@@ -68,7 +71,10 @@ def audit_bright(root: str | Path, schema: LabelSchema, output_dir: str | Path,
     modalities: Counter[str] = Counter()
     optical_stats, sar_stats = _stats(3), _stats(1)
 
-    for sample in samples:
+    print(f"[audit] validating {len(samples):,} official BRIGHT tiles", flush=True)
+    for index, sample in enumerate(samples, start=1):
+        if index == 1 or index % 25 == 0 or index == len(samples):
+            print(f"[audit] processed {index:,}/{len(samples):,} tiles", flush=True)
         assert sample.pre_optical and sample.post_sar and sample.label
         pre, post, target = _summary(sample.pre_optical), _summary(sample.post_sar), _summary(sample.label)
         events[sample.event_id] += 1
@@ -89,6 +95,7 @@ def audit_bright(root: str | Path, schema: LabelSchema, output_dir: str | Path,
         classes.update({int(value): int(count) for value, count in zip(values, counts)})
     if alignment_issues:
         raise ValueError("BRIGHT modality alignment audit failed:\n" + "\n".join(alignment_issues))
+    print("[audit] alignment and label validation passed; writing reports", flush=True)
     normalization = {"pre_optical": _serialise_stats(optical_stats), "post_sar": _serialise_stats(sar_stats)}
     if normalization_path:
         target_path = Path(normalization_path)

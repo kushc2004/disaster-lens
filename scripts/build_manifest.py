@@ -14,7 +14,11 @@ from disasterlens.data.manifest import build_bright_manifest, write_manifest
 def main() -> None:
     config = load_yaml(ROOT / "configs/data/bright.yaml", sys.argv[1:])
     dataset_root = Path(config["root"])
-    samples = build_bright_manifest(dataset_root)
+    print(f"[manifest] discovering official BRIGHT files under {dataset_root}", flush=True)
+    samples = build_bright_manifest(
+        dataset_root,
+        progress=lambda done, total: print(f"[manifest] checked {done:,}/{total:,} tiles", flush=True),
+    )
     path = write_manifest(samples, ROOT / config["manifest_path"], dataset_root=dataset_root)
     print(f"Wrote {len(samples)} BRIGHT samples to {path}")
 

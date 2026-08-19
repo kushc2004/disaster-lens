@@ -21,6 +21,7 @@ def main() -> None:
     samples = load_manifest(ROOT / config["manifest_path"], dataset_root=Path(config["root"]))
     if not samples:
         raise RuntimeError("The official BRIGHT manifest is empty.")
+    print(f"[M1] loading two real BRIGHT tiles from a {len(samples):,}-sample manifest", flush=True)
     loader = DataLoader(
         BrightDataset(samples[:2], normalization=normalization_from_stats(config["normalization"], ROOT / config["normalization_stats_path"])),
         batch_size=min(2, len(samples)), shuffle=False, num_workers=0, collate_fn=collate_samples,

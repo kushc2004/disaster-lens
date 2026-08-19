@@ -66,6 +66,11 @@ def main() -> None:
     model = EarlyFusionUNet(in_channels=int(model_config["in_channels"]), num_classes=int(model_config["num_classes"]), base_channels=int(model_config["base_channels"]))
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(trainer["learning_rate"]), weight_decay=float(trainer["weight_decay"]))
     epochs, warmup_epochs = int(trainer["epochs"]), int(trainer["warmup_epochs"])
+    print(
+        f"[training] real BRIGHT run on {device}: {len(train_samples):,} train tiles, "
+        f"{len(val_samples):,} validation tiles, {epochs} epochs",
+        flush=True,
+    )
     if warmup_epochs:
         scheduler = torch.optim.lr_scheduler.SequentialLR(
             optimizer,
@@ -81,6 +86,7 @@ def main() -> None:
     run_config = {"data": data, "model": model_config, "trainer": trainer, "split_path": split_path, "overfit_tiles": overfit_tiles, "device": str(device)}
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     (checkpoint_dir / "config.json").write_text(json.dumps(run_config, indent=2) + "\n", encoding="utf-8")
+    print(f"[training] checkpoints will be written to {checkpoint_dir}", flush=True)
     Trainer(model, optimizer, SegmentationLoss(class_weights=weights, lovasz_weight=float(model_config["lovasz_weight"])), device, checkpoint_dir, amp=bool(trainer["amp"])).fit(train_loader, val_loader, epochs=epochs, scheduler=scheduler)
 
 

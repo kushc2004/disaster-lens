@@ -31,13 +31,16 @@ def _move(batch: dict[str, Any], device: torch.device) -> tuple[torch.Tensor, to
 def evaluate_epoch(model: nn.Module, loader: Any, criterion: nn.Module, device: torch.device) -> dict[str, float | list[float] | list[list[int]]]:
     model.eval()
     total_loss, examples, confusion = 0.0, 0, None
-    for batch in loader:
+    total_batches = len(loader)
+    for batch_index, batch in enumerate(loader, start=1):
         pre, sar, mask = _move(batch, device)
         logits = model(pre, sar)
         total_loss += float(criterion(logits, mask)) * mask.shape[0]
         examples += mask.shape[0]
         matrix = confusion_matrix(logits.cpu(), mask.cpu())
         confusion = matrix if confusion is None else confusion + matrix
+        if batch_index == 1 or batch_index % 25 == 0 or batch_index == total_batches:
+            print(f"[evaluation] batch {batch_index}/{total_batches}", flush=True)
     if not examples or confusion is None:
         raise ValueError("Evaluation loader is empty")
     metrics = metrics_from_confusion(confusion)
@@ -62,6 +65,7 @@ class Trainer:
     def fit(self, train_loader: Any, val_loader: Any, *, epochs: int, scheduler: Any | None = None) -> list[dict[str, Any]]:
         best, history = float("-inf"), []
         for epoch in range(1, epochs + 1):
+            print(f"[training] epoch {epoch}/{epochs} started ({len(train_loader)} training batches)", flush=True)
             transform = getattr(train_loader.dataset, "transform", None)
             if transform is not None and hasattr(transform, "set_epoch"):
                 transform.set_epoch(epoch)
@@ -82,6 +86,7 @@ class Trainer:
                 raise ValueError("Training loader is empty")
             if scheduler is not None:
                 scheduler.step()
+            print(f"[training] epoch {epoch}/{epochs} training complete; validating", flush=True)
             validation = evaluate_epoch(self.model, val_loader, self.criterion, self.device)
             record = {"epoch": epoch, "train_loss": train_loss / examples, **{f"val_{key}": value for key, value in validation.items()}}
             history.append(record)
@@ -92,5 +97,5 @@ class Trainer:
                 torch.save(state, self.checkpoint_dir / "best.pt")
             torch.save(state, self.checkpoint_dir / "last.pt")
             (self.checkpoint_dir / "history.json").write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
-            print(json.dumps(record, sort_keys=True))
+            print(f"[training] epoch {epoch}/{epochs} complete: {json.dumps(record, sort_keys=True)}", flush=True)
         return history

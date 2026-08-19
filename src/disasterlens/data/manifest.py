@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .schemas import DisasterSample
 
@@ -49,7 +49,9 @@ def _georeference(path: Path) -> tuple[str | None, tuple[float, float, float, fl
         return crs, bounds, dataset.width, dataset.height, dataset.count
 
 
-def build_bright_manifest(root: Path) -> list[DisasterSample]:
+def build_bright_manifest(
+    root: Path, *, progress: Callable[[int, int], None] | None = None
+) -> list[DisasterSample]:
     """Discover official BRIGHT BDA files without changing raw data."""
     root = Path(root).expanduser().resolve()
     missing_dirs = REQUIRED_DIRS.difference(path.name for path in root.iterdir() if path.is_dir()) if root.exists() else REQUIRED_DIRS
@@ -68,7 +70,8 @@ def build_bright_manifest(root: Path) -> list[DisasterSample]:
         raise BrightLayoutError(f"Modalities do not align by tile ID: {detail}")
 
     samples: list[DisasterSample] = []
-    for tile_id in sorted(expected):
+    total = len(expected)
+    for index, tile_id in enumerate(sorted(expected), start=1):
         event_id, disaster_type = _event_and_type(tile_id)
         crs, bounds, width, height, bands = _georeference(pre[tile_id])
         if crs is None:
@@ -78,6 +81,8 @@ def build_bright_manifest(root: Path) -> list[DisasterSample]:
             pre_optical=pre[tile_id], post_sar=post[tile_id], label=labels[tile_id], crs=crs, bounds=bounds,
             metadata={"source_layout": "official_bda", "pre_width": width, "pre_height": height, "pre_bands": bands},
         ))
+        if progress and (index == 1 or index % 100 == 0 or index == total):
+            progress(index, total)
     return samples
 
 
@@ -94,4 +99,3 @@ def load_manifest(path: Path, *, dataset_root: Path | None = None) -> list[Disas
     path = Path(path)
     with path.open(encoding="utf-8") as handle:
         return [DisasterSample.from_record(json.loads(line), root=dataset_root) for line in handle if line.strip()]
-

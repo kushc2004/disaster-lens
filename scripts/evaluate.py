@@ -41,12 +41,14 @@ def main() -> None:
     normalization = normalization_from_stats(data["normalization"], ROOT / data["normalization_stats_path"])
     dataset = BrightDataset([by_id[tile] for tile in split[partition]], normalization=normalization)
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"[evaluation] loading {checkpoint_path} on {device}; {len(dataset):,} real {partition} tiles", flush=True)
     model = EarlyFusionUNet(in_channels=int(model_config["in_channels"]), num_classes=int(model_config["num_classes"]), base_channels=int(model_config["base_channels"])).to(device)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True)["model_state"])
     metrics = evaluate_epoch(model, DataLoader(dataset, batch_size=1, collate_fn=collate_samples), SegmentationLoss(), device)
     output = ROOT / "outputs/metrics" / f"{checkpoint_path.stem}_{partition}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    print(f"[evaluation] metrics saved to {output}", flush=True)
     print(json.dumps(metrics, indent=2))
 
 
