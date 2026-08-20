@@ -1,6 +1,6 @@
 project: disaster-lens
-kernel_slug: kushchaudhari/disaster-lens
-code_file: notebooks/train.ipynb
+kernel_slug: kushchaudhari/cross-disaster-damage-assessment
+code_file: notebooks/cross_disaster_damage_assessment.ipynb
 accelerator: gpu
 internet: true
 privacy: private

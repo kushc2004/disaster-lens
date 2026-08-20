@@ -1,7 +1,7 @@
 {
-  "id": "kushchaudhari/disaster-lens",
-  "title": "disaster-lens",
-  "code_file": "notebooks/train.ipynb",
+  "id": "kushchaudhari/cross-disaster-damage-assessment",
+  "title": "cross-disaster-damage-assessment",
+  "code_file": "notebooks/cross_disaster_damage_assessment.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": true,
