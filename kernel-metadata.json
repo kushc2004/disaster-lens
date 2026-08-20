@@ -9,7 +9,8 @@
   "machine_shape": "NvidiaTeslaT4",
   "enable_internet": true,
   "dataset_sources": [
-    "kushchaudhari/bright-dataset"
+    "kushchaudhari/bright-dataset",
+    "kushchaudhari/disaster-lens-m1-cache"
   ],
   "competition_sources": []
 }

@@ -6,6 +6,7 @@ internet: true
 privacy: private
 datasets:
   - kushchaudhari/bright-dataset
+  - kushchaudhari/disaster-lens-m1-cache
 competitions: []
 outputs:
   download_to: .kaggle-outputs/
