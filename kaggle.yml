@@ -1,0 +1,11 @@
+project: disaster-lens
+kernel_slug: kushc2004/disaster-lens-training
+code_file: notebooks/train.ipynb
+accelerator: gpu
+internet: true
+privacy: private
+datasets:
+  - kushc2004/bright-dataset
+competitions: []
+outputs:
+  download_to: .kaggle-outputs/

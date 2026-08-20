@@ -1,0 +1,12 @@
+{
+  "id": "kushc2004/disaster-lens-training",
+  "title": "disaster-lens",
+  "code_file": "notebooks/train.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": ["kushc2004/bright-dataset"],
+  "competition_sources": []
+}

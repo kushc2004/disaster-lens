@@ -28,6 +28,12 @@ python scripts/train.py split_path=data/manifests/splits/event_holdout.json over
 python scripts/evaluate.py checkpoint=outputs/checkpoints/early_fusion_unet/best.pt split_path=data/manifests/splits/event_holdout.json partition=test
 ```
 
+## Kaggle Studio GPU workflow
+
+The preferred remote workflow is Kaggle Studio from VS Code. `kaggle.yml` attaches the official `kushc2004/bright-dataset`, selects a GPU runtime, and runs [`notebooks/train.ipynb`](notebooks/train.ipynb). The notebook requires and verifies an NVIDIA Tesla T4, audits the attached BRIGHT files, trains the M2 baseline with visible epoch output, evaluates the held-out real event, and leaves artifacts under `/kaggle/working/outputs` for download into `.kaggle-outputs/`.
+
+After `Kaggle: Sign In`, `Kaggle: Init Project`, and `Kaggle: Attach Dataset`, run `Kaggle: Run Current Notebook`. Do not add a Drive mount or a GitHub clone to the Kaggle notebook; the Kaggle Studio project uploads the repository files and the dataset is provided by Kaggle.
+
 ## Scope and limitations
 
 M1 and M2 are not accepted until the commands above run against the extracted official BRIGHT copy and save their artifacts. The included `create_smoke_bright.py` is legacy scaffolding and is not part of the BRIGHT workflow. Results and performance claims are intentionally absent. BRIGHT masks must be audited before real-data loading: unknown label IDs fail loudly. Population and road data are not yet part of this milestone.
