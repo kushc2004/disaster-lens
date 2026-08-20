@@ -22,3 +22,29 @@ def test_synchronized_transform_preserves_marker_alignment():
     images, mask = SynchronizedGeometry(seed=11)({"pre_optical": marker.copy(), "post_sar": marker.copy()}, marker[0].astype(np.int64), index=0)
     assert np.array_equal(images["pre_optical"][0], images["post_sar"][0])
     assert np.array_equal(images["pre_optical"][0], mask)
+
+
+def test_crop_size_returns_fixed_shape_for_variable_tiles():
+    marker = np.arange(6 * 7, dtype=np.float32).reshape(1, 6, 7)
+    images, mask = SynchronizedGeometry(seed=11, crop_size=4)(
+        {"pre_optical": marker.copy(), "post_sar": marker.copy()},
+        marker[0].astype(np.int64),
+        index=0,
+    )
+    assert images["pre_optical"].shape == (1, 4, 4)
+    assert images["post_sar"].shape == (1, 4, 4)
+    assert mask.shape == (4, 4)
+    assert np.array_equal(images["pre_optical"][0], images["post_sar"][0])
+    assert np.array_equal(images["pre_optical"][0], mask)
+
+
+def test_crop_size_pads_undersized_tiles_to_fixed_shape():
+    marker = np.zeros((1, 6, 7), dtype=np.float32)
+    images, mask = SynchronizedGeometry(seed=11, crop_size=8)(
+        {"pre_optical": marker.copy(), "post_sar": marker.copy()},
+        marker[0].astype(np.int64),
+        index=0,
+    )
+    assert images["pre_optical"].shape == (1, 8, 8)
+    assert images["post_sar"].shape == (1, 8, 8)
+    assert mask.shape == (8, 8)

@@ -13,6 +13,7 @@ class GeometryPlan:
     quarter_turns: int = 0
     top: int | None = None
     left: int | None = None
+    crop_size: int | None = None
 
 
 class SynchronizedGeometry:
@@ -31,18 +32,35 @@ class SynchronizedGeometry:
 
     def plan_for(self, index: int, *, height: int, width: int) -> GeometryPlan:
         rng = np.random.default_rng(self.seed + self.epoch * 1_000_003 + index)
-        if self.crop_size is not None and (height < self.crop_size or width < self.crop_size):
-            raise ValueError(f"crop_size={self.crop_size} exceeds sample size {(height, width)}")
-        top = int(rng.integers(height - self.crop_size + 1)) if self.crop_size else None
-        left = int(rng.integers(width - self.crop_size + 1)) if self.crop_size else None
-        return GeometryPlan(bool(rng.integers(2)), bool(rng.integers(2)), int(rng.integers(4)), top, left)
+        top = int(rng.integers(height - self.crop_size + 1)) if self.crop_size and height >= self.crop_size else 0 if self.crop_size else None
+        left = int(rng.integers(width - self.crop_size + 1)) if self.crop_size and width >= self.crop_size else 0 if self.crop_size else None
+        return GeometryPlan(
+            bool(rng.integers(2)),
+            bool(rng.integers(2)),
+            int(rng.integers(4)),
+            top,
+            left,
+            self.crop_size,
+        )
 
     @staticmethod
-    def apply(array: np.ndarray, plan: GeometryPlan) -> np.ndarray:
+    def apply(array: np.ndarray, plan: GeometryPlan, *, pad_mode: str = "edge") -> np.ndarray:
+        """Apply a plan and return an exact crop_size square when requested.
+
+        Image channels are edge-padded for undersized genuine tiles.  Label masks
+        use background (0) padding, supplied by ``__call__`` below.
+        """
         result = array
-        if plan.top is not None and plan.left is not None:
-            size = min(result.shape[-2] - plan.top, result.shape[-1] - plan.left)
-            result = result[..., plan.top:plan.top + size, plan.left:plan.left + size]
+        if plan.top is not None and plan.left is not None and plan.crop_size is not None:
+            result = result[..., plan.top:plan.top + plan.crop_size, plan.left:plan.left + plan.crop_size]
+            pad_height = plan.crop_size - result.shape[-2]
+            pad_width = plan.crop_size - result.shape[-1]
+            if pad_height or pad_width:
+                padding = [(0, 0)] * (result.ndim - 2) + [(0, pad_height), (0, pad_width)]
+                if pad_mode == "constant":
+                    result = np.pad(result, padding, mode=pad_mode, constant_values=0)
+                else:
+                    result = np.pad(result, padding, mode=pad_mode)
         if plan.horizontal_flip:
             result = np.flip(result, axis=-1)
         if plan.vertical_flip:
@@ -53,4 +71,7 @@ class SynchronizedGeometry:
 
     def __call__(self, images: dict[str, np.ndarray | None], mask: np.ndarray, *, index: int) -> tuple[dict[str, np.ndarray | None], np.ndarray]:
         plan = self.plan_for(index, height=mask.shape[-2], width=mask.shape[-1])
-        return {name: None if image is None else self.apply(image, plan) for name, image in images.items()}, self.apply(mask, plan)
+        return (
+            {name: None if image is None else self.apply(image, plan) for name, image in images.items()},
+            self.apply(mask, plan, pad_mode="constant"),
+        )
