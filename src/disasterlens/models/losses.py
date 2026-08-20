@@ -38,3 +38,63 @@ class SegmentationLoss(nn.Module):
         valid = target != self.ignore_index
         probabilities = logits.softmax(dim=1).permute(0, 2, 3, 1)[valid]
         return ce + self.lovasz_weight * lovasz_softmax_flat(probabilities, target[valid])
+
+
+class DualHeadSegmentationLoss(nn.Module):
+    """Localization plus conditional building-severity loss for BRIGHT."""
+
+    def __init__(
+        self,
+        *,
+        damage_class_weights: torch.Tensor | None = None,
+        ignore_index: int = 255,
+        lovasz_weight: float = 1.0,
+        lambda_localization: float = 1.0,
+        lambda_damage: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.register_buffer("damage_class_weights", damage_class_weights)
+        self.ignore_index = ignore_index
+        self.lovasz_weight = lovasz_weight
+        self.lambda_localization = lambda_localization
+        self.lambda_damage = lambda_damage
+
+    def _component(
+        self,
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        weights: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        valid = target != self.ignore_index
+        # A synchronized crop can legitimately contain no labelled buildings.
+        # Cross-entropy over an all-ignore target returns NaN, so make that
+        # head contribute a differentiable zero instead.
+        if not bool(valid.any()):
+            return logits.sum() * 0.0
+        ce = F.cross_entropy(
+            logits, target, weight=weights, ignore_index=self.ignore_index
+        )
+        probabilities = logits.softmax(dim=1).permute(0, 2, 3, 1)[valid]
+        return ce + self.lovasz_weight * lovasz_softmax_flat(
+            probabilities, target[valid]
+        )
+
+    def forward(
+        self, outputs: dict[str, torch.Tensor], target: torch.Tensor
+    ) -> torch.Tensor:
+        if set(outputs) < {"localization", "damage"}:
+            raise ValueError("Dual-head output lacks localization or damage logits")
+        valid = target != self.ignore_index
+        localization_target = torch.where(
+            valid, (target > 0).long(), torch.full_like(target, self.ignore_index)
+        )
+        damage_target = torch.where(
+            valid & (target > 0), target - 1, torch.full_like(target, self.ignore_index)
+        )
+        localization = self._component(
+            outputs["localization"], localization_target
+        )
+        damage = self._component(
+            outputs["damage"], damage_target, self.damage_class_weights
+        )
+        return self.lambda_localization * localization + self.lambda_damage * damage

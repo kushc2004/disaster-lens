@@ -11,6 +11,7 @@ import torch
 from torch import nn
 
 from disasterlens.eval import confusion_matrix, metrics_from_confusion
+from disasterlens.models.multimodal import dual_heads_to_four_class
 
 
 def set_seed(seed: int) -> None:
@@ -27,6 +28,13 @@ def _move(batch: dict[str, Any], device: torch.device) -> tuple[torch.Tensor, to
     return pre.to(device, non_blocking=True), sar.to(device, non_blocking=True), batch["mask"].to(device, non_blocking=True)
 
 
+def semantic_logits(
+    outputs: torch.Tensor | dict[str, torch.Tensor],
+) -> torch.Tensor:
+    """Convert either supported model output into BRIGHT four-class logits."""
+    return outputs if isinstance(outputs, torch.Tensor) else dual_heads_to_four_class(outputs)
+
+
 @torch.no_grad()
 def evaluate_epoch(model: nn.Module, loader: Any, criterion: nn.Module, device: torch.device) -> dict[str, float | list[float] | list[list[int]]]:
     model.eval()
@@ -34,10 +42,10 @@ def evaluate_epoch(model: nn.Module, loader: Any, criterion: nn.Module, device: 
     total_batches = len(loader)
     for batch_index, batch in enumerate(loader, start=1):
         pre, sar, mask = _move(batch, device)
-        logits = model(pre, sar)
-        total_loss += float(criterion(logits, mask)) * mask.shape[0]
+        outputs = model(pre, sar)
+        total_loss += float(criterion(outputs, mask)) * mask.shape[0]
         examples += mask.shape[0]
-        matrix = confusion_matrix(logits.cpu(), mask.cpu())
+        matrix = confusion_matrix(semantic_logits(outputs).cpu(), mask.cpu())
         confusion = matrix if confusion is None else confusion + matrix
         if batch_index == 1 or batch_index % 25 == 0 or batch_index == total_batches:
             print(f"[evaluation] batch {batch_index}/{total_batches}", flush=True)
@@ -56,32 +64,61 @@ class Trainer:
     device: torch.device
     checkpoint_dir: Path
     amp: bool = True
+    checkpoint_metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         self.model.to(self.device)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp and self.device.type == "cuda")
 
-    def fit(self, train_loader: Any, val_loader: Any, *, epochs: int, scheduler: Any | None = None) -> list[dict[str, Any]]:
-        best, history = float("-inf"), []
-        for epoch in range(1, epochs + 1):
+    def fit(
+        self,
+        train_loader: Any,
+        val_loader: Any,
+        *,
+        epochs: int,
+        scheduler: Any | None = None,
+        start_epoch: int = 1,
+        history: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        history = list(history or [])
+        best = max(
+            (float(record["val_f1_damage"]) for record in history),
+            default=float("-inf"),
+        )
+        for epoch in range(start_epoch, epochs + 1):
             print(f"[training] epoch {epoch}/{epochs} started ({len(train_loader)} training batches)", flush=True)
             transform = getattr(train_loader.dataset, "transform", None)
             if transform is not None and hasattr(transform, "set_epoch"):
                 transform.set_epoch(epoch)
+            sampler = getattr(train_loader, "sampler", None)
+            if sampler is not None and hasattr(sampler, "set_epoch"):
+                sampler.set_epoch(epoch)
             self.model.train()
             train_loss, examples = 0.0, 0
-            for batch in train_loader:
+            total_batches = len(train_loader)
+            for batch_index, batch in enumerate(train_loader, start=1):
                 pre, sar, mask = _move(batch, self.device)
                 self.optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=self.device.type, enabled=self.amp and self.device.type == "cuda"):
-                    logits = self.model(pre, sar)
-                    loss = self.criterion(logits, mask)
+                    outputs = self.model(pre, sar)
+                    loss = self.criterion(outputs, mask)
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 train_loss += float(loss.detach()) * mask.shape[0]
                 examples += mask.shape[0]
+                if (
+                    batch_index == 1
+                    or batch_index % 25 == 0
+                    or batch_index == total_batches
+                ):
+                    running_loss = train_loss / max(examples, 1)
+                    print(
+                        f"[training] epoch {epoch}/{epochs} batch "
+                        f"{batch_index}/{total_batches}: loss={running_loss:.6f}",
+                        flush=True,
+                    )
             if not examples:
                 raise ValueError("Training loader is empty")
             if scheduler is not None:
@@ -91,7 +128,14 @@ class Trainer:
             record = {"epoch": epoch, "train_loss": train_loss / examples, **{f"val_{key}": value for key, value in validation.items()}}
             history.append(record)
             metric = float(validation["f1_damage"])
-            state = {"epoch": epoch, "model_state": self.model.state_dict(), "optimizer_state": self.optimizer.state_dict(), "metric": metric}
+            state = {
+                "epoch": epoch,
+                "model_state": self.model.state_dict(),
+                "optimizer_state": self.optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
+                "metric": metric,
+                "checkpoint_metadata": dict(self.checkpoint_metadata or {}),
+            }
             if metric > best:
                 best = metric
                 torch.save(state, self.checkpoint_dir / "best.pt")

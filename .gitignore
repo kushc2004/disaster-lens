@@ -1,6 +1,12 @@
 .venv/
 __pycache__/
 .pytest_cache/
+# Local artifacts downloaded from Kaggle runs; source notebooks remain tracked
+# under notebooks/ and are the only notebook inputs uploaded to Kaggle.
+.kaggle-outputs/
+.kaggle-run*.log
+disaster-lens.log
+/notebook.ipynb
 *.DS_Store
 *.py[cod]
 data/raw/*

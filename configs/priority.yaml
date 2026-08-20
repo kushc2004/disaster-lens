@@ -1,0 +1,35 @@
+grid_size_m: 500
+damage:
+  destroyed_multiplier: 2.0
+normalization:
+  lower_quantile: 0.02
+  upper_quantile: 0.98
+weights:
+  damage: 0.40
+  population: 0.30
+  accessibility: 0.20
+  hazard: 0.10
+road_risk:
+  buffer_fraction_of_grid: 0.25
+  minimum_buffer_m: 25.0
+  cost_multiplier: 4.0
+bands:
+  moderate_quantile: 0.50
+  high_quantile: 0.75
+  critical_quantile: 0.90
+top_fraction: 0.10
+uncertainty_quantiles:
+  lower: 0.05
+  median: 0.50
+  upper: 0.95
+monte_carlo:
+  simulations: 500
+  seed: 42
+sensitivity:
+  samples: 1000
+  seed: 43
+  ranges:
+    damage: [0.25, 0.55]
+    population: [0.15, 0.40]
+    accessibility: [0.10, 0.30]
+    hazard: [0.00, 0.20]

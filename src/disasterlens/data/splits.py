@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Iterable, Sequence
+
+import numpy as np
 
 from .schemas import DisasterSample
 
@@ -59,3 +62,55 @@ def official_split(samples: Sequence[DisasterSample], *, split_root: Path) -> Sp
     # Standard benchmark can share events by design; only tile-level leakage is forbidden.
     return Split(tuple(by_id[x] for x in sorted(ids["train"])), tuple(by_id[x] for x in sorted(ids["val"])), tuple(by_id[x] for x in sorted(ids["test"])))
 
+
+def standard_tile_split(
+    samples: Sequence[DisasterSample],
+    *,
+    train_fraction: float = 0.70,
+    val_fraction: float = 0.15,
+    seed: int = 42,
+) -> Split:
+    """Build a deterministic event-stratified tile-level standard split.
+
+    Official BRIGHT split files take precedence. This fallback is only for
+    official distributions that omit them. Events may occur in several
+    partitions, but a tile can occur in exactly one partition.
+    """
+    if not samples:
+        raise ValueError("Cannot split an empty BRIGHT manifest")
+    if not 0 < train_fraction < 1 or not 0 < val_fraction < 1:
+        raise ValueError("train_fraction and val_fraction must be between zero and one")
+    if train_fraction + val_fraction >= 1:
+        raise ValueError("train_fraction + val_fraction must be less than one")
+    if len({sample.tile_id for sample in samples}) != len(samples):
+        raise ValueError("Standard split candidates must have unique tile IDs")
+
+    by_event: dict[str, list[DisasterSample]] = {}
+    for sample in samples:
+        by_event.setdefault(sample.event_id, []).append(sample)
+    partitions: dict[str, list[DisasterSample]] = {"train": [], "val": [], "test": []}
+    for event_id, group in sorted(by_event.items()):
+        token = hashlib.sha256(f"{seed}:{event_id}".encode()).digest()[:8]
+        rng = np.random.default_rng(int.from_bytes(token, "big"))
+        ordered = [group[index] for index in rng.permutation(len(group))]
+        count = len(ordered)
+        if count >= 3:
+            train_count = min(count - 2, max(1, round(count * train_fraction)))
+            val_count = min(count - train_count - 1, max(1, round(count * val_fraction)))
+        else:
+            train_count, val_count = 1, 0
+        partitions["train"].extend(ordered[:train_count])
+        partitions["val"].extend(ordered[train_count : train_count + val_count])
+        partitions["test"].extend(ordered[train_count + val_count :])
+
+    for target in ("val", "test"):
+        if not partitions[target]:
+            donor = max((name for name in partitions if name != target), key=lambda name: len(partitions[name]))
+            if len(partitions[donor]) <= 1:
+                raise ValueError("At least three BRIGHT tiles are required for a standard split")
+            partitions[target].append(partitions[donor].pop())
+    return Split(
+        tuple(sorted(partitions["train"], key=lambda item: item.tile_id)),
+        tuple(sorted(partitions["val"], key=lambda item: item.tile_id)),
+        tuple(sorted(partitions["test"], key=lambda item: item.tile_id)),
+    )

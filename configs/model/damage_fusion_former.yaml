@@ -1,0 +1,21 @@
+name: damage_fusion_former
+encoder:
+  share_weights: false
+  architecture: hierarchical_convolutional
+  base_channels: 32
+fusion:
+  mode: full
+  heads: 8
+  dropout: 0.1
+  gated_stages: [1, 2]
+  cross_attention_stages: [3, 4]
+decoder:
+  type: fpn
+  channels: 128
+heads:
+  localization_classes: 2
+  damage_classes: 3
+loss:
+  lovasz_weight: 1.0
+  lambda_localization: 1.0
+  lambda_damage: 1.0
