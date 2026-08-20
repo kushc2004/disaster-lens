@@ -40,7 +40,7 @@ To watch the remote run locally after Push & Run, use:
 uv run python scripts/watch_kaggle_logs.py
 ~~~
 
-The watcher prints new log lines, polls every 10 seconds, and appends the status and log stream to .kaggle-run.log. Override the interval or output path with --interval 5 --output logs/kaggle-run.log; it stops automatically when Kaggle reports completion or an error. Press Ctrl-C to stop watching without cancelling the Kaggle run.
+The watcher attaches to Kaggle's live log stream, prints every training/data-progress line as it arrives, and appends the same output to `.kaggle-run.log`. Use `--output logs/kaggle-run.log` for another file; it stops automatically when Kaggle reports completion or an error. Press Ctrl-C to stop watching without cancelling the Kaggle run.
 
 ## Scope and limitations
 
