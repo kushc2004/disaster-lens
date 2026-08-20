@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -97,17 +97,24 @@ def collate_samples(batch: list[dict[str, Any]]) -> dict[str, Any]:
             "geo": [item["geo"] for item in batch]}
 
 
-def class_weights_from_training_samples(samples: Sequence[DisasterSample], schema: LabelSchema = BRIGHT_V1) -> np.ndarray:
+def class_weights_from_training_samples(
+    samples: Sequence[DisasterSample],
+    schema: LabelSchema = BRIGHT_V1,
+    progress: Callable[[int, int], None] | None = None,
+) -> np.ndarray:
     """Inverse-frequency class weights computed from training masks only."""
     counts = np.zeros(len(schema.classes), dtype=np.float64)
     class_ids = sorted(schema.classes)
-    for sample in samples:
+    total = len(samples)
+    for completed, sample in enumerate(samples, start=1):
         if sample.label is None:
             raise ValueError(f"Sample has no label: {sample.tile_id}")
         mask = BrightDataset._read(sample.label, channels=1)[0]
         schema.validate(mask)
         for index, class_id in enumerate(class_ids):
             counts[index] += np.count_nonzero(mask == class_id)
+        if progress and (completed == 1 or completed == total or completed % 100 == 0):
+            progress(completed, total)
     if np.any(counts == 0):
         raise ValueError(f"Cannot compute class weights: a training class is absent ({counts.tolist()})")
     weights = counts.sum() / (len(counts) * counts)

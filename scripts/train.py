@@ -54,6 +54,7 @@ def _config_overrides(overrides: list[str], section: str) -> list[str]:
 
 def main() -> None:
     overrides = sys.argv[1:]
+    print("[training] loading configuration, official manifest, normalization, and saved split", flush=True)
     data = load_yaml(ROOT / "configs/data/bright.yaml", _config_overrides(overrides, "data"))
     model_config = load_yaml(ROOT / "configs/model/unet_baseline.yaml", _config_overrides(overrides, "model"))
     trainer = load_yaml(ROOT / "configs/trainer/unet_baseline.yaml", _config_overrides(overrides, "trainer"))
@@ -82,6 +83,10 @@ def main() -> None:
         val_samples = train_samples
     if not train_samples or not val_samples:
         raise ValueError("Training and validation partitions must both be non-empty")
+    print(
+        f"[training] split loaded: {len(train_samples):,} train tiles, {len(val_samples):,} validation tiles; building data loaders",
+        flush=True,
+    )
     set_seed(int(trainer["seed"]))
     crop_size = int(trainer["crop_size"])
     transform = SynchronizedGeometry(seed=int(trainer["seed"]), crop_size=crop_size, randomize=not tiny_overfit)
@@ -95,7 +100,29 @@ def main() -> None:
     val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_samples)
     device = _device(str(trainer["device"]))
     use_class_weights = bool(trainer["use_class_weights"])
-    weights = torch.from_numpy(class_weights_from_training_samples(train_samples)).to(device) if use_class_weights else None
+    checkpoint_dir = ROOT / trainer["checkpoint_dir"]
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    weights_path = checkpoint_dir / "class_weights.json"
+    weights = None
+    if use_class_weights:
+        tile_ids = [sample.tile_id for sample in train_samples]
+        cached_weights = None
+        if weights_path.exists():
+            candidate = json.loads(weights_path.read_text(encoding="utf-8"))
+            if candidate.get("train_tile_ids") == tile_ids:
+                cached_weights = candidate.get("weights")
+        if cached_weights is None:
+            print(f"[training] computing class weights from {len(train_samples):,} official training masks", flush=True)
+            computed = class_weights_from_training_samples(
+                train_samples,
+                progress=lambda completed, total: print(f"[training] class-weight masks {completed:,}/{total:,}", flush=True),
+            )
+            weights_path.write_text(json.dumps({"train_tile_ids": tile_ids, "weights": computed.tolist()}, indent=2) + "\n", encoding="utf-8")
+            cached_weights = computed.tolist()
+            print(f"[training] saved reusable class weights to {weights_path}", flush=True)
+        else:
+            print(f"[training] reusing cached class weights from {weights_path}", flush=True)
+        weights = torch.tensor(cached_weights, dtype=torch.float32, device=device)
     model = EarlyFusionUNet(in_channels=int(model_config["in_channels"]), num_classes=int(model_config["num_classes"]), base_channels=int(model_config["base_channels"]))
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(trainer["learning_rate"]), weight_decay=float(trainer["weight_decay"]))
     epochs, warmup_epochs = int(trainer["epochs"]), int(trainer["warmup_epochs"])
@@ -121,7 +148,6 @@ def main() -> None:
         )
     else:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, epochs))
-    checkpoint_dir = ROOT / trainer["checkpoint_dir"]
     run_config: dict[str, Any] = {
         "data": data,
         "model": model_config,
@@ -132,7 +158,6 @@ def main() -> None:
         "tiny_overfit_selection": tiny_selection,
         "device": str(device),
     }
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     (checkpoint_dir / "config.json").write_text(json.dumps(run_config, indent=2) + "\n", encoding="utf-8")
     print(f"[training] checkpoints will be written to {checkpoint_dir}", flush=True)
     history = Trainer(model, optimizer, SegmentationLoss(class_weights=weights, lovasz_weight=float(model_config["lovasz_weight"])), device, checkpoint_dir, amp=bool(trainer["amp"])).fit(train_loader, val_loader, epochs=epochs, scheduler=scheduler)
