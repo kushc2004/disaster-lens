@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from disasterlens.config import load_yaml
-from disasterlens.data.manifest import build_bright_manifest
+from disasterlens.data.manifest import build_bright_manifest, load_manifest
 from disasterlens.data.splits import event_holdout_split, official_split
 
 
@@ -20,7 +20,13 @@ def _records(samples):
 def main() -> None:
     data = load_yaml(ROOT / "configs/data/bright.yaml", sys.argv[1:])
     experiment = load_yaml(ROOT / "configs/experiment/event_holdout.yaml", sys.argv[1:]).get("split", {})
-    samples = build_bright_manifest(Path(data["root"]))
+    manifest_path = ROOT / data["manifest_path"]
+    if manifest_path.exists():
+        samples = load_manifest(manifest_path, dataset_root=Path(data["root"]))
+        print(f"[split] reusing manifest {manifest_path} ({len(samples):,} samples)", flush=True)
+    else:
+        print("[split] manifest not found; building it from the official dataset", flush=True)
+        samples = build_bright_manifest(Path(data["root"]))
     if any(item == "split=standard_split" for item in sys.argv[1:]):
         if not data.get("official_split_root"):
             raise ValueError("official_split_root must be configured for split=standard_split")
