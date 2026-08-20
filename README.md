@@ -30,7 +30,7 @@ python scripts/evaluate.py checkpoint=outputs/checkpoints/early_fusion_unet/best
 
 ## Kaggle Studio GPU workflow
 
-The preferred remote workflow is Kaggle Studio from VS Code. `kaggle.yml` attaches the official `kushc2004/bright-dataset`, selects a GPU runtime, and runs [`notebooks/train.ipynb`](notebooks/train.ipynb). The notebook requires and verifies an NVIDIA Tesla T4, audits the attached BRIGHT files, trains the M2 baseline with visible epoch output, evaluates the held-out real event, and leaves artifacts under `/kaggle/working/outputs` for download into `.kaggle-outputs/`.
+The preferred remote workflow is Kaggle Studio from VS Code. `kaggle.yml` attaches the official `kushchaudhari/bright-dataset`, selects a GPU runtime, and runs [`notebooks/train.ipynb`](notebooks/train.ipynb). The notebook requires and verifies an NVIDIA Tesla T4, audits the attached BRIGHT files, extracts ZIP archives when needed, trains the M2 baseline with visible epoch output, evaluates the held-out real event, and leaves artifacts under `/kaggle/working/outputs` for download into `.kaggle-outputs/`.
 
 After `Kaggle: Sign In`, `Kaggle: Init Project`, and `Kaggle: Attach Dataset`, run `Kaggle: Run Current Notebook`. Do not add a Drive mount or a GitHub clone to the Kaggle notebook; the Kaggle Studio project uploads the repository files and the dataset is provided by Kaggle.
 
