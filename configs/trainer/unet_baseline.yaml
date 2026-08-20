@@ -7,6 +7,7 @@ crop_size: 512
 learning_rate: 0.0001
 weight_decay: 0.005
 warmup_epochs: 3
+use_class_weights: true
 tiny_overfit_min_damage_f1: 0.95
 amp: true
 checkpoint_dir: outputs/checkpoints/early_fusion_unet

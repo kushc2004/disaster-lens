@@ -85,15 +85,22 @@ def main() -> None:
     val_data = BrightDataset(val_samples, transform=val_transform, normalization=normalization)
     batch_size, workers = int(trainer["batch_size"]), int(trainer["num_workers"])
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True, collate_fn=collate_samples)
-    val_loader = DataLoader(val_data, batch_size=1, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_samples)
+    val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_samples)
     device = _device(str(trainer["device"]))
-    weights = torch.from_numpy(class_weights_from_training_samples(train_samples)).to(device)
+    use_class_weights = bool(trainer["use_class_weights"])
+    weights = torch.from_numpy(class_weights_from_training_samples(train_samples)).to(device) if use_class_weights else None
     model = EarlyFusionUNet(in_channels=int(model_config["in_channels"]), num_classes=int(model_config["num_classes"]), base_channels=int(model_config["base_channels"]))
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(trainer["learning_rate"]), weight_decay=float(trainer["weight_decay"]))
     epochs, warmup_epochs = int(trainer["epochs"]), int(trainer["warmup_epochs"])
     print(
         f"[training] real BRIGHT run on {device}: {len(train_samples):,} train tiles, "
         f"{len(val_samples):,} validation tiles, {epochs} epochs",
+        flush=True,
+    )
+    print(
+        "[training] loss: CrossEntropy + "
+        f"{float(model_config['lovasz_weight']):g} * Lovasz-Softmax; "
+        f"class weights={'enabled' if use_class_weights else 'disabled'}",
         flush=True,
     )
     if warmup_epochs:
