@@ -21,6 +21,11 @@ def _summary(path: Path) -> dict[str, object]:
                 "bounds": tuple(round(value, 6) for value in source.bounds)}
 
 
+def _bounds_delta(first: tuple[float, float, float, float], second: tuple[float, float, float, float]) -> float:
+    """Return the largest coordinate difference between two raster bounds."""
+    return max(abs(left - right) for left, right in zip(first, second))
+
+
 def _stats(channels: int) -> dict[str, np.ndarray]:
     return {"count": np.zeros(channels), "sum": np.zeros(channels), "sum_sq": np.zeros(channels),
             "min": np.full(channels, np.inf), "max": np.full(channels, -np.inf)}
@@ -68,6 +73,7 @@ def audit_bright(root: str | Path, schema: LabelSchema, output_dir: str | Path,
     events: Counter[str] = Counter()
     classes: Counter[int] = Counter()
     alignment_issues: list[str] = []
+    geospatial_warnings: list[str] = []
     modalities: Counter[str] = Counter()
     optical_stats, sar_stats = _stats(3), _stats(1)
 
@@ -87,7 +93,19 @@ def audit_bright(root: str | Path, schema: LabelSchema, output_dir: str | Path,
         if pre["crs"] != post["crs"] or pre["crs"] != target["crs"]:
             alignment_issues.append(f"{sample.tile_id}: CRS differs")
         if pre["bounds"] != post["bounds"] or pre["bounds"] != target["bounds"]:
-            alignment_issues.append(f"{sample.tile_id}: bounds differ")
+            # BRIGHT's official BDA loader pairs same-named rasters by pixel
+            # position.  GeoTIFF bounds can differ for an event even when all
+            # three arrays share the same pixel grid, so preserve and report
+            # the metadata discrepancy instead of silently resampling data.
+            pre_bounds, post_bounds, target_bounds = pre["bounds"], post["bounds"], target["bounds"]
+            if not all(isinstance(bounds, tuple) for bounds in (pre_bounds, post_bounds, target_bounds)):
+                alignment_issues.append(f"{sample.tile_id}: geospatial bounds missing")
+            else:
+                delta = max(
+                    _bounds_delta(pre_bounds, post_bounds),
+                    _bounds_delta(pre_bounds, target_bounds),
+                )
+                geospatial_warnings.append(f"{sample.tile_id}: bounds differ (max coordinate delta {delta:.6g})")
         with rasterio.open(sample.label) as source:
             mask = source.read(1)
         schema.validate(mask)
@@ -95,7 +113,10 @@ def audit_bright(root: str | Path, schema: LabelSchema, output_dir: str | Path,
         classes.update({int(value): int(count) for value, count in zip(values, counts)})
     if alignment_issues:
         raise ValueError("BRIGHT modality alignment audit failed:\n" + "\n".join(alignment_issues))
-    print("[audit] alignment and label validation passed; writing reports", flush=True)
+    if geospatial_warnings:
+        print(f"[audit] pixel-grid alignment passed; {len(geospatial_warnings):,} geospatial bounds warnings recorded", flush=True)
+    else:
+        print("[audit] alignment and label validation passed; writing reports", flush=True)
     normalization = {"pre_optical": _serialise_stats(optical_stats), "post_sar": _serialise_stats(sar_stats)}
     if normalization_path:
         target_path = Path(normalization_path)
@@ -129,11 +150,18 @@ def audit_bright(root: str | Path, schema: LabelSchema, output_dir: str | Path,
     class_rows = "\n".join(f"| {code} | {schema.classes.get(code, 'ignore')} | {classes[code]:,} |" for code in ids)
     modality_rows = "\n".join(f"| {name} | {count:,} |" for name, count in sorted(modalities.items()))
     event_rows = "\n".join(f"- `{event}`: {count:,} tiles" for event, count in sorted(events.items()))
+    geospatial_note = "- Geospatial bounds: exact match across modalities\n"
+    if geospatial_warnings:
+        geospatial_note = (
+            f"- Geospatial bounds: differ for {len(geospatial_warnings):,} tiles; arrays retain matching pixel dimensions and are paired without resampling, consistent with BRIGHT's official BDA loader.\n"
+            + "\n".join(f"  - {warning}" for warning in geospatial_warnings)
+            + "\n"
+        )
     stat_rows = "\n".join(
         f"| {name} | {', '.join(f'{value:.6g}' for value in values['mean'])} | {', '.join(f'{value:.6g}' for value in values['std'])} | {', '.join(f'{value:.6g}' for value in values['min'])} | {', '.join(f'{value:.6g}' for value in values['max'])} |"
         for name, values in normalization.items()
     )
     stats_note = f"- Normalization statistics: `{Path(normalization_path).resolve()}`\n" if normalization_path else ""
     (reports / "bright_data_audit.md").write_text(
-        f"# BRIGHT data audit\n\n- Dataset root: `{Path(root).resolve()}`\n- Tiles: {len(samples):,}\n- Events: {len(events):,}\n- Layout: `pre-event`, `post-event`, `target`\n- Alignment: passed (CRS, bounds, and pixel dimensions)\n{stats_note}\n## Modalities\n\n| Modality | Assets |\n| --- | ---: |\n{modality_rows}\n\n## Intensity statistics\n\n| Modality | Mean | Std | Min | Max |\n| --- | --- | --- | --- | --- |\n{stat_rows}\n\n## Mask values\n\n| Code | Class | Pixels |\n| --- | --- | ---: |\n{class_rows}\n\n## Events\n\n{event_rows}\n", encoding="utf-8")
+        f"# BRIGHT data audit\n\n- Dataset root: `{Path(root).resolve()}`\n- Tiles: {len(samples):,}\n- Events: {len(events):,}\n- Layout: `pre-event`, `post-event`, `target`\n- Pixel-grid alignment: passed (CRS and pixel dimensions)\n{geospatial_note}{stats_note}\n## Modalities\n\n| Modality | Assets |\n| --- | ---: |\n{modality_rows}\n\n## Intensity statistics\n\n| Modality | Mean | Std | Min | Max |\n| --- | --- | --- | --- | --- |\n{stat_rows}\n\n## Mask values\n\n| Code | Class | Pixels |\n| --- | --- | ---: |\n{class_rows}\n\n## Events\n\n{event_rows}\n", encoding="utf-8")
     return samples
