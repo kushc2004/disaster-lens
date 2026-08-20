@@ -19,11 +19,12 @@ class GeometryPlan:
 class SynchronizedGeometry:
     """Applies one sampled geometry plan to every image and the label mask."""
 
-    def __init__(self, *, seed: int = 42, crop_size: int | None = None) -> None:
+    def __init__(self, *, seed: int = 42, crop_size: int | None = None, randomize: bool = True) -> None:
         if crop_size is not None and crop_size <= 0:
             raise ValueError("crop_size must be positive")
         self.seed = seed
         self.crop_size = crop_size
+        self.randomize = randomize
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -31,6 +32,10 @@ class SynchronizedGeometry:
         self.epoch = epoch
 
     def plan_for(self, index: int, *, height: int, width: int) -> GeometryPlan:
+        if not self.randomize:
+            top = max(0, (height - self.crop_size) // 2) if self.crop_size else None
+            left = max(0, (width - self.crop_size) // 2) if self.crop_size else None
+            return GeometryPlan(top=top, left=left, crop_size=self.crop_size)
         rng = np.random.default_rng(self.seed + self.epoch * 1_000_003 + index)
         top = int(rng.integers(height - self.crop_size + 1)) if self.crop_size and height >= self.crop_size else 0 if self.crop_size else None
         left = int(rng.integers(width - self.crop_size + 1)) if self.crop_size and width >= self.crop_size else 0 if self.crop_size else None

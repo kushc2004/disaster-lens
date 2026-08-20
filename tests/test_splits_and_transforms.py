@@ -48,3 +48,11 @@ def test_crop_size_pads_undersized_tiles_to_fixed_shape():
     assert images["pre_optical"].shape == (1, 8, 8)
     assert images["post_sar"].shape == (1, 8, 8)
     assert mask.shape == (8, 8)
+
+
+def test_non_random_geometry_reuses_the_same_center_crop_across_epochs():
+    geometry = SynchronizedGeometry(seed=11, crop_size=4, randomize=False)
+    first = geometry.plan_for(0, height=6, width=7)
+    geometry.set_epoch(99)
+    second = geometry.plan_for(0, height=6, width=7)
+    assert first == second == type(first)(top=1, left=1, crop_size=4)

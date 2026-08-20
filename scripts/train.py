@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader
@@ -30,11 +31,32 @@ def _device(value: str) -> torch.device:
     return torch.device(value)
 
 
+def _config_overrides(overrides: list[str], section: str) -> list[str]:
+    """Apply unscoped and section-scoped overrides to one configuration file.
+
+    The notebook historically used ``trainer.epochs=100``.  Passing that
+    unchanged to a top-level trainer YAML silently created an unused ``trainer``
+    mapping.  Normalising it here makes both ``epochs=100`` and
+    ``trainer.epochs=100`` affect the effective trainer configuration.
+    """
+    selected: list[str] = []
+    prefix = f"{section}."
+    for override in overrides:
+        if "=" not in override:
+            continue
+        key, value = override.split("=", 1)
+        if key.startswith(prefix):
+            selected.append(f"{key.removeprefix(prefix)}={value}")
+        elif "." not in key:
+            selected.append(override)
+    return selected
+
+
 def main() -> None:
     overrides = sys.argv[1:]
-    data = load_yaml(ROOT / "configs/data/bright.yaml", overrides)
-    model_config = load_yaml(ROOT / "configs/model/unet_baseline.yaml", overrides)
-    trainer = load_yaml(ROOT / "configs/trainer/unet_baseline.yaml", overrides)
+    data = load_yaml(ROOT / "configs/data/bright.yaml", _config_overrides(overrides, "data"))
+    model_config = load_yaml(ROOT / "configs/model/unet_baseline.yaml", _config_overrides(overrides, "model"))
+    trainer = load_yaml(ROOT / "configs/trainer/unet_baseline.yaml", _config_overrides(overrides, "trainer"))
     split_path = _value(overrides, "split_path")
     if not split_path:
         raise ValueError("A saved real split is required: split_path=data/manifests/splits/event_holdout.json")
@@ -45,6 +67,7 @@ def main() -> None:
     train_samples = [by_id[tile] for tile in split["train"]]
     val_samples = [by_id[tile] for tile in split["val"]]
     overfit_tiles = int(_value(overrides, "overfit_tiles", "0") or 0)
+    tiny_overfit = overfit_tiles > 0
     if overfit_tiles:
         if overfit_tiles < 1:
             raise ValueError("overfit_tiles must be positive")
@@ -54,10 +77,12 @@ def main() -> None:
         raise ValueError("Training and validation partitions must both be non-empty")
     set_seed(int(trainer["seed"]))
     crop_size = int(trainer["crop_size"])
-    transform = SynchronizedGeometry(seed=int(trainer["seed"]), crop_size=crop_size)
+    transform = SynchronizedGeometry(seed=int(trainer["seed"]), crop_size=crop_size, randomize=not tiny_overfit)
     train_data = BrightDataset(train_samples, transform=transform, normalization=normalization)
-    # Validation keeps full tiles; no random crop or geometry augmentation.
-    val_data = BrightDataset(val_samples, normalization=normalization)
+    # A tiny-overfit gate must validate the *same exact real crops* it trains
+    # on.  Full training retains no random validation augmentation.
+    val_transform = SynchronizedGeometry(seed=int(trainer["seed"]), crop_size=crop_size, randomize=False) if tiny_overfit else None
+    val_data = BrightDataset(val_samples, transform=val_transform, normalization=normalization)
     batch_size, workers = int(trainer["batch_size"]), int(trainer["num_workers"])
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True, collate_fn=collate_samples)
     val_loader = DataLoader(val_data, batch_size=1, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_samples)
@@ -83,11 +108,32 @@ def main() -> None:
     else:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, epochs))
     checkpoint_dir = ROOT / trainer["checkpoint_dir"]
-    run_config = {"data": data, "model": model_config, "trainer": trainer, "split_path": split_path, "overfit_tiles": overfit_tiles, "device": str(device)}
+    run_config: dict[str, Any] = {
+        "data": data,
+        "model": model_config,
+        "trainer": trainer,
+        "split_path": split_path,
+        "overfit_tiles": overfit_tiles,
+        "tiny_overfit": tiny_overfit,
+        "device": str(device),
+    }
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     (checkpoint_dir / "config.json").write_text(json.dumps(run_config, indent=2) + "\n", encoding="utf-8")
     print(f"[training] checkpoints will be written to {checkpoint_dir}", flush=True)
-    Trainer(model, optimizer, SegmentationLoss(class_weights=weights, lovasz_weight=float(model_config["lovasz_weight"])), device, checkpoint_dir, amp=bool(trainer["amp"])).fit(train_loader, val_loader, epochs=epochs, scheduler=scheduler)
+    history = Trainer(model, optimizer, SegmentationLoss(class_weights=weights, lovasz_weight=float(model_config["lovasz_weight"])), device, checkpoint_dir, amp=bool(trainer["amp"])).fit(train_loader, val_loader, epochs=epochs, scheduler=scheduler)
+    best_record = max(history, key=lambda record: float(record["val_f1_damage"]))
+    (checkpoint_dir / "metrics.json").write_text(json.dumps({"best": best_record, "history": history}, indent=2) + "\n", encoding="utf-8")
+    if tiny_overfit:
+        minimum = float(_value(overrides, "overfit_min_damage_f1", str(trainer["tiny_overfit_min_damage_f1"])) or trainer["tiny_overfit_min_damage_f1"])
+        best_f1 = float(best_record["val_f1_damage"])
+        result = {"tiles": overfit_tiles, "best_epoch": best_record["epoch"], "best_damage_macro_f1": best_f1, "required_damage_macro_f1": minimum}
+        (checkpoint_dir / "tiny_overfit_result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        if best_f1 < minimum:
+            raise RuntimeError(
+                f"Tiny-set overfit failed: best validation damage macro-F1 {best_f1:.4f} is below {minimum:.4f}. "
+                "Do not start full training; debug the baseline first."
+            )
+        print(f"[training] tiny-set overfit passed: damage macro-F1={best_f1:.4f} (threshold={minimum:.4f})", flush=True)
 
 
 if __name__ == "__main__":
