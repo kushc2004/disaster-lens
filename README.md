@@ -34,6 +34,14 @@ The preferred remote workflow is Kaggle Studio from VS Code. `kaggle.yml` attach
 
 After `Kaggle: Sign In`, `Kaggle: Init Project`, and `Kaggle: Attach Dataset`, run `Kaggle: Run Current Notebook`. Do not add a Drive mount or a GitHub clone to the Kaggle notebook; the Kaggle Studio project uploads the repository files and the dataset is provided by Kaggle.
 
+To watch the remote run locally after Push & Run, use:
+
+~~~bash
+uv run python scripts/watch_kaggle_logs.py
+~~~
+
+The watcher prints new log lines, polls every 10 seconds, and appends the status and log stream to .kaggle-run.log. Override the interval or output path with --interval 5 --output logs/kaggle-run.log; it stops automatically when Kaggle reports completion or an error. Press Ctrl-C to stop watching without cancelling the Kaggle run.
+
 ## Scope and limitations
 
 M1 and M2 are not accepted until the commands above run against the extracted official BRIGHT copy and save their artifacts. The included `create_smoke_bright.py` is legacy scaffolding and is not part of the BRIGHT workflow. Results and performance claims are intentionally absent. BRIGHT masks must be audited before real-data loading: unknown label IDs fail loudly. Population and road data are not yet part of this milestone.
