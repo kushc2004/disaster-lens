@@ -1,5 +1,5 @@
 project: disaster-lens
-kernel_slug: kushchaudhari/disaster-lens-training
+kernel_slug: kushchaudhari/disaster-lens
 code_file: notebooks/train.ipynb
 accelerator: gpu
 internet: true

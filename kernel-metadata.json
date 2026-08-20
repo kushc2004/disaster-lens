@@ -1,12 +1,15 @@
 {
-  "id": "kushchaudhari/disaster-lens-training",
+  "id": "kushchaudhari/disaster-lens",
   "title": "disaster-lens",
   "code_file": "notebooks/train.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": true,
   "enable_gpu": true,
+  "machine_shape": "NvidiaTeslaT4",
   "enable_internet": true,
-  "dataset_sources": ["kushchaudhari/bright-dataset"],
+  "dataset_sources": [
+    "kushchaudhari/bright-dataset"
+  ],
   "competition_sources": []
 }
