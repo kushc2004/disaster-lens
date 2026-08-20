@@ -5,7 +5,7 @@ accelerator: gpu
 internet: true
 privacy: private
 datasets:
-  - kushc2004/bright-dataset
+  - kushchaudhari/bright-dataset
 competitions: []
 outputs:
   download_to: .kaggle-outputs/
