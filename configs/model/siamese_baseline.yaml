@@ -1,5 +1,5 @@
 name: pseudo_siamese
+encoder: resnet18
 base_channels: 32
 num_classes: 4
 lovasz_weight: 1.0
-

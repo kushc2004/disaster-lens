@@ -78,6 +78,7 @@ def model_and_loss(
         model = PseudoSiameseUNet(
             num_classes=int(model_config["num_classes"]),
             base_channels=int(model_config["base_channels"]),
+            encoder=str(model_config["encoder"]),
         )
         return model, SegmentationLoss(
             class_weights=class_weights,
@@ -120,6 +121,20 @@ def _load_inputs(overrides: list[str]) -> tuple[dict[str, Any], list[Any], dict[
     if (set(split["train"]) & set(split["val"])) or (set(split["train"]) & set(split["test"])) or (set(split["val"]) & set(split["test"])):
         raise ValueError("Tile leakage detected in saved split")
     samples = load_manifest(ROOT / data["manifest_path"], dataset_root=Path(data["root"]))
+    by_id = {sample.tile_id: sample for sample in samples}
+    unknown = set().union(*map(set, split.values())).difference(by_id)
+    if unknown:
+        raise ValueError(f"Split references tiles absent from official manifest: {sorted(unknown)[:5]}")
+    if split_path.stem == "event_holdout":
+        partition_events = {
+            name: {by_id[tile_id].event_id for tile_id in tile_ids}
+            for name, tile_ids in split.items()
+        }
+        if any(
+            partition_events[left] & partition_events[right]
+            for left, right in (("train", "val"), ("train", "test"), ("val", "test"))
+        ):
+            raise ValueError("Event leakage detected in saved event-held-out split")
     return data, samples, split, split_path_raw
 
 

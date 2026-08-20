@@ -77,6 +77,7 @@ def build_model(kind: str, fusion_mode: str) -> torch.nn.Module:
         return PseudoSiameseUNet(
             num_classes=int(config["num_classes"]),
             base_channels=int(config["base_channels"]),
+            encoder=str(config["encoder"]),
         )
     if kind != "m4":
         raise ValueError("model_kind must be m3 or m4")

@@ -210,10 +210,19 @@ def validate_event_split(test_event: str) -> tuple[bool, str]:
             if line.strip():
                 record = json.loads(line)
                 tile_events[str(record["tile_id"])] = str(record["event_id"])
-    unknown = [tile for tile in partitions["test"] if tile not in tile_events]
+    unknown = set().union(*partitions.values()).difference(tile_events)
     if unknown:
         return False, f"split references {len(unknown)} tiles absent from the manifest"
-    actual = {tile_events[tile] for tile in partitions["test"]}
+    partition_events = {
+        name: {tile_events[tile] for tile in tiles}
+        for name, tiles in partitions.items()
+    }
+    if any(
+        partition_events[left] & partition_events[right]
+        for left, right in (("train", "val"), ("train", "test"), ("val", "test"))
+    ):
+        return False, "split contains event leakage"
+    actual = partition_events["test"]
     if actual != {test_event}:
         return False, f"test partition events {sorted(actual)} do not equal requested {test_event!r}"
     return True, f"leakage-free held-out split for {test_event}"
@@ -314,8 +323,10 @@ def build_steps(args: argparse.Namespace, test_event: str) -> list[Step]:
     py = sys.executable
     heldout_split = "data/manifests/splits/event_holdout.json"
     standard_split = "data/manifests/splits/standard_split.json"
-    m3_standard = ROOT / "outputs/runs/m3/standard_split"
-    m3_heldout = ROOT / "outputs/runs/m3/event_holdout"
+    # Version the M3 directory by its backbone. This prevents a new ResNet-18
+    # run from accidentally resuming a checkpoint from the retired compact encoder.
+    m3_standard = ROOT / "outputs/runs/m3/standard_resnet18"
+    m3_heldout = ROOT / "outputs/runs/m3/event_holdout_resnet18"
     m4_standard = ROOT / "outputs/runs/m4/standard_full"
     m4_heldout = ROOT / "outputs/runs/m4/event_holdout_full"
     m4_ablation = ROOT / "outputs/runs/m4/event_holdout_gated_only"
@@ -483,22 +494,22 @@ def build_steps(args: argparse.Namespace, test_event: str) -> list[Step]:
             ),
             Step(
                 "M3", "standard_training",
-                train_command("m3", standard_split, "standard_split", m3_standard, args.m3_epochs),
+                train_command("m3", standard_split, "standard_resnet18", m3_standard, args.m3_epochs),
                 artifacts=training_artifacts(m3_standard), gpu=True,
             ),
             Step(
                 "M3", "standard_evaluation",
-                evaluate_command("m3", standard_split, "standard_split", m3_standard),
+                evaluate_command("m3", standard_split, "standard_resnet18", m3_standard),
                 artifacts=evaluation_artifacts(m3_standard), gpu=True,
             ),
             Step(
                 "M3", "heldout_training",
-                train_command("m3", heldout_split, "event_holdout", m3_heldout, args.m3_epochs),
+                train_command("m3", heldout_split, "event_holdout_resnet18", m3_heldout, args.m3_epochs),
                 artifacts=training_artifacts(m3_heldout), gpu=True,
             ),
             Step(
                 "M3", "heldout_evaluation",
-                evaluate_command("m3", heldout_split, "event_holdout", m3_heldout),
+                evaluate_command("m3", heldout_split, "event_holdout_resnet18", m3_heldout),
                 artifacts=evaluation_artifacts(m3_heldout) + (
                     ROOT / "outputs/reports/cross_event_report.md",
                 ),

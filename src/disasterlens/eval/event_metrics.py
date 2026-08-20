@@ -162,7 +162,18 @@ def evaluate_by_event(
     pooled = sum(matrices.values(), torch.zeros_like(next(iter(matrices.values()))))
     pooled_metrics = metrics_from_confusion(pooled)
     pooled_metrics["ece"] = pooled_bins.ece()
-    pooled_metrics["bootstrap_95_ci"] = _event_bootstrap(matrices)
+    # An event-level bootstrap needs more than one independent event.  With a
+    # singleton held-out event every resample is identical, so percentile
+    # bounds would look precise while conveying no uncertainty information.
+    if len(matrices) >= 2:
+        pooled_metrics["bootstrap_95_ci"] = _event_bootstrap(matrices)
+    else:
+        pooled_metrics["bootstrap_95_ci"] = {
+            "available": False,
+            "reason": "event-level bootstrap requires at least two held-out events",
+            "unit": "event",
+            "n_units": len(matrices),
+        }
     per_event: list[dict[str, Any]] = []
     for event_id in sorted(matrices):
         values = metrics_from_confusion(matrices[event_id])

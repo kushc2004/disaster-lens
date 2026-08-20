@@ -23,6 +23,7 @@ dependencies = [
   "shapely>=2.0",
   "streamlit>=1.38",
   "torch>=2.3",
+  "torchvision>=0.18",
 ]
 
 [dependency-groups]
