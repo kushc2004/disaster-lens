@@ -20,7 +20,9 @@ def lovasz_softmax_flat(probabilities: torch.Tensor, labels: torch.Tensor) -> to
         intersection = foreground.sum() - foreground.cumsum(0)
         union = foreground.sum() + (1 - foreground).cumsum(0)
         gradient = 1 - intersection / union.clamp_min(1)
-        gradient[1:] -= gradient[:-1]
+        # Do not use ``gradient[1:] -= gradient[:-1]``: recent PyTorch
+        # releases reject the overlapping source and destination views.
+        gradient = torch.cat((gradient[:1], gradient[1:] - gradient[:-1]))
         losses.append(torch.dot(errors, gradient))
     return torch.stack(losses).mean() if losses else probabilities.sum() * 0.0
 
