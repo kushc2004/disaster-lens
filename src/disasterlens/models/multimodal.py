@@ -7,6 +7,7 @@ import math
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torchvision.models import resnet18
 
 from .baselines import DoubleConv
 
@@ -36,14 +37,30 @@ class ModalityEncoder(nn.Module):
 
 
 class PseudoSiameseUNet(nn.Module):
-    """Separate optical/SAR encoders with stage-wise learned fusion."""
+    """ResNet-18 pseudo-Siamese baseline with stage-wise learned fusion.
 
-    def __init__(self, *, num_classes: int = 4, base_channels: int = 32) -> None:
+    The two encoders are independently initialized: optical and SAR weights are
+    never shared.  Fusion projections reduce the ResNet feature widths before
+    the U-Net decoder, keeping the baseline practical on a 16 GB T4.
+    """
+
+    def __init__(
+        self,
+        *,
+        num_classes: int = 4,
+        base_channels: int = 32,
+        encoder: str = "resnet18",
+    ) -> None:
         super().__init__()
+        if encoder != "resnet18":
+            raise ValueError(f"Unsupported M3 encoder {encoder!r}; expected 'resnet18'")
         channels = (base_channels, base_channels * 2, base_channels * 4, base_channels * 8)
-        self.optical_encoder = ModalityEncoder(3, channels)
-        self.sar_encoder = ModalityEncoder(1, channels)
-        self.fuse = nn.ModuleList([nn.Conv2d(width * 2, width, 1) for width in channels])
+        self.optical_encoder = _ResNet18Encoder(3)
+        self.sar_encoder = _ResNet18Encoder(1)
+        encoder_channels = (64, 128, 256, 512)
+        self.fuse = nn.ModuleList(
+            [nn.Conv2d(width * 2, fused_width, 1) for width, fused_width in zip(encoder_channels, channels, strict=True)]
+        )
         self.up3 = nn.ConvTranspose2d(channels[3], channels[2], 2, stride=2)
         self.dec3 = DoubleConv(channels[2] * 2, channels[2])
         self.up2 = nn.ConvTranspose2d(channels[2], channels[1], 2, stride=2)
@@ -66,7 +83,38 @@ class PseudoSiameseUNet(nn.Module):
         value = self.dec3(self._up(self.up3, fused[3], fused[2]))
         value = self.dec2(self._up(self.up2, value, fused[1]))
         value = self.dec1(self._up(self.up1, value, fused[0]))
-        return self.head(value)
+        logits = self.head(value)
+        return F.interpolate(logits, size=pre_optical.shape[-2:], mode="bilinear", align_corners=False)
+
+
+class _ResNet18Encoder(nn.Module):
+    """A ResNet-18 feature extractor adapted to one- or three-band imagery."""
+
+    def __init__(self, in_channels: int) -> None:
+        super().__init__()
+        backbone = resnet18(weights=None)
+        if in_channels != 3:
+            backbone.conv1 = nn.Conv2d(
+                in_channels,
+                backbone.conv1.out_channels,
+                kernel_size=backbone.conv1.kernel_size,
+                stride=backbone.conv1.stride,
+                padding=backbone.conv1.padding,
+                bias=False,
+            )
+        self.stem = nn.Sequential(backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool)
+        self.layer1 = backbone.layer1
+        self.layer2 = backbone.layer2
+        self.layer3 = backbone.layer3
+        self.layer4 = backbone.layer4
+
+    def forward(self, image: torch.Tensor) -> list[torch.Tensor]:
+        value = self.stem(image)
+        stage1 = self.layer1(value)
+        stage2 = self.layer2(stage1)
+        stage3 = self.layer3(stage2)
+        stage4 = self.layer4(stage3)
+        return [stage1, stage2, stage3, stage4]
 
 
 class GatedFusion(nn.Module):
