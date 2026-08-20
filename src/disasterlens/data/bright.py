@@ -114,6 +114,101 @@ def class_weights_from_training_samples(samples: Sequence[DisasterSample], schem
     return (weights / weights.mean()).astype(np.float32)
 
 
+def select_tiny_overfit_samples(
+    samples: Sequence[DisasterSample],
+    *,
+    count: int,
+    crop_size: int,
+    cache_path: str | Path | None = None,
+    schema: LabelSchema = BRIGHT_V1,
+) -> tuple[list[DisasterSample], dict[str, Any]]:
+    """Select real train tiles whose deterministic crops cover damage classes.
+
+    This is only for the tiny-overfit pipeline gate.  It never changes a proper
+    train/validation/test split and it never introduces non-BRIGHT data.
+    """
+    if count < 1:
+        raise ValueError("count must be positive")
+    if count > len(samples):
+        raise ValueError(f"Requested {count} tiny-overfit tiles from only {len(samples)} training samples")
+    if crop_size < 1:
+        raise ValueError("crop_size must be positive")
+    sample_by_id = {sample.tile_id: sample for sample in samples}
+    if len(sample_by_id) != len(samples):
+        raise ValueError("Tiny-overfit candidates must have unique tile IDs")
+    cache = Path(cache_path) if cache_path else None
+    if cache and cache.exists():
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        selected_ids = saved.get("tile_ids", [])
+        if (
+            saved.get("version") == 1
+            and saved.get("crop_size") == crop_size
+            and saved.get("count") == count
+            and len(selected_ids) == count
+            and all(tile_id in sample_by_id for tile_id in selected_ids)
+        ):
+            print(f"[tiny-overfit] restored label-coverage selection from {cache}", flush=True)
+            return [sample_by_id[tile_id] for tile_id in selected_ids], saved
+
+    class_ids = sorted(schema.classes)
+    crop_counts: list[np.ndarray] = []
+    total = len(samples)
+    print(
+        f"[tiny-overfit] scanning centre-crop labels for coverage-balanced selection ({total:,} official training tiles)",
+        flush=True,
+    )
+    for index, sample in enumerate(samples, start=1):
+        if sample.label is None:
+            raise ValueError(f"Sample has no label: {sample.tile_id}")
+        mask = BrightDataset._read(sample.label, channels=1)[0].astype(np.int64, copy=False)
+        schema.validate(mask)
+        height, width = mask.shape
+        top, left = max(0, (height - crop_size) // 2), max(0, (width - crop_size) // 2)
+        crop = mask[top:top + crop_size, left:left + crop_size]
+        crop_counts.append(np.asarray([np.count_nonzero(crop == class_id) for class_id in class_ids], dtype=np.int64))
+        if index == 1 or index % 100 == 0 or index == total:
+            print(f"[tiny-overfit] scanned {index:,}/{total:,} labels", flush=True)
+
+    counts = np.stack(crop_counts)
+    selected_indices: list[int] = []
+    aggregate = np.zeros(len(class_ids), dtype=np.int64)
+    available = set(range(total))
+    for _ in range(count):
+        chosen = max(
+            available,
+            key=lambda index: (
+                int(np.min(aggregate[1:] + counts[index, 1:])),
+                int(np.sum(np.log1p(aggregate[1:] + counts[index, 1:]) * 1_000_000)),
+                int(np.sum(counts[index, 1:])),
+                samples[index].tile_id,
+            ),
+        )
+        selected_indices.append(chosen)
+        aggregate += counts[chosen]
+        available.remove(chosen)
+    selected = [samples[index] for index in selected_indices]
+    result: dict[str, Any] = {
+        "version": 1,
+        "count": count,
+        "crop_size": crop_size,
+        "tile_ids": [sample.tile_id for sample in selected],
+        "class_ids": class_ids,
+        "aggregate_centre_crop_pixels": {str(class_id): int(aggregate[index]) for index, class_id in enumerate(class_ids)},
+        "selection": "greedy_maximise_minimum_damage_class_centre_crop_pixels",
+    }
+    if np.any(aggregate[1:] == 0):
+        raise ValueError(
+            "Cannot form a meaningful tiny-overfit set: at least one damage class is absent from all selected real centre crops "
+            f"({result['aggregate_centre_crop_pixels']})."
+        )
+    if cache:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print(f"[tiny-overfit] saved label-coverage selection to {cache}", flush=True)
+    print(f"[tiny-overfit] selected {count} official tiles with centre-crop pixels {result['aggregate_centre_crop_pixels']}", flush=True)
+    return selected, result
+
+
 def normalization_from_stats(config: dict[str, Any], stats_path: str | Path) -> dict[str, Any]:
     """Attach real audit mean/std values to the configured z-score transforms."""
     path = Path(stats_path)

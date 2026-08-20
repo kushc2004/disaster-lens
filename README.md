@@ -24,7 +24,9 @@ export DISASTERLENS_BRIGHT_ROOT=/content/drive/MyDrive/disaster-lens/data/raw/br
 python scripts/inspect_bright.py data=bright
 python scripts/build_manifest.py data=bright
 python scripts/make_splits.py data=bright split.test_events='[<real-event-id>]'
-# This must pass before starting the full run; it uses eight official BRIGHT tiles.
+# This must pass before starting the full run; it selects eight official BRIGHT
+# training tiles with deterministic centre-crop coverage of every damage class.
+# The exact selection is saved under outputs/cache/ and reused on reruns.
 python scripts/train.py split_path=data/manifests/splits/event_holdout.json overfit_tiles=8 epochs=400 crop_size=512 learning_rate=0.001 warmup_epochs=0 use_class_weights=false checkpoint_dir=outputs/checkpoints/early_fusion_unet_tiny
 python scripts/train.py split_path=data/manifests/splits/event_holdout.json epochs=30 crop_size=512 checkpoint_dir=outputs/checkpoints/early_fusion_unet_full
 python scripts/evaluate.py checkpoint=outputs/checkpoints/early_fusion_unet_full/best.pt split_path=data/manifests/splits/event_holdout.json partition=test

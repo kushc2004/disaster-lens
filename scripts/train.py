@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from disasterlens.config import load_yaml
-from disasterlens.data import BrightDataset, SynchronizedGeometry, class_weights_from_training_samples, collate_samples, load_manifest, normalization_from_stats
+from disasterlens.data import BrightDataset, SynchronizedGeometry, class_weights_from_training_samples, collate_samples, load_manifest, normalization_from_stats, select_tiny_overfit_samples
 from disasterlens.models import EarlyFusionUNet, SegmentationLoss
 from disasterlens.train import Trainer, set_seed
 
@@ -68,10 +68,17 @@ def main() -> None:
     val_samples = [by_id[tile] for tile in split["val"]]
     overfit_tiles = int(_value(overrides, "overfit_tiles", "0") or 0)
     tiny_overfit = overfit_tiles > 0
+    tiny_selection: dict[str, Any] | None = None
     if overfit_tiles:
         if overfit_tiles < 1:
             raise ValueError("overfit_tiles must be positive")
-        train_samples = train_samples[:overfit_tiles]
+        selection_cache = ROOT / "outputs/cache" / f"tiny_overfit_selection_{overfit_tiles}_crop{int(trainer['crop_size'])}.json"
+        train_samples, tiny_selection = select_tiny_overfit_samples(
+            train_samples,
+            count=overfit_tiles,
+            crop_size=int(trainer["crop_size"]),
+            cache_path=selection_cache,
+        )
         val_samples = train_samples
     if not train_samples or not val_samples:
         raise ValueError("Training and validation partitions must both be non-empty")
@@ -122,6 +129,7 @@ def main() -> None:
         "split_path": split_path,
         "overfit_tiles": overfit_tiles,
         "tiny_overfit": tiny_overfit,
+        "tiny_overfit_selection": tiny_selection,
         "device": str(device),
     }
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
