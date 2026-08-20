@@ -1,6 +1,6 @@
 seed: 42
 device: auto
-epochs: 60
+epochs: 30
 batch_size: 4
 num_workers: 2
 crop_size: 512
@@ -12,4 +12,3 @@ event_balanced_sampling: true
 samples_per_epoch: null
 amp: true
 checkpoint_dir: outputs/runs/multimodal
-
