@@ -109,6 +109,7 @@ def main() -> None:
     # reused for a different split accidentally.
     supplied_weights_path = os.environ.get("DISASTERLENS_CLASS_WEIGHTS_PATH") or _value(overrides, "class_weights_path")
     weights_path = Path(supplied_weights_path) if supplied_weights_path else checkpoint_dir / "class_weights.json"
+    weights_path.parent.mkdir(parents=True, exist_ok=True)
     weights = None
     if use_class_weights:
         tile_ids = [sample.tile_id for sample in train_samples]
