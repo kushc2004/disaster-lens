@@ -516,7 +516,12 @@ def finalize_run(run_name: str, *, calibrate: bool = True) -> dict[str, object]:
         raise FileNotFoundError(f"No durable GPU run found at {run_root}")
     status = json.loads(status_path.read_text(encoding="utf-8"))
     prior_state = str(status.get("state"))
-    recoverable_states = {"gpu_scoring_completed", "failed", "cpu_finalization_failed"}
+    # ``cpu_finalizing`` is recoverable as well: a user may intentionally
+    # stop a slow CPU-only finalizer after the GPU stage has committed every
+    # immutable training/scoring artifact.
+    recoverable_states = {
+        "gpu_scoring_completed", "failed", "cpu_finalization_failed", "cpu_finalizing"
+    }
     if prior_state not in recoverable_states:
         raise RuntimeError(
             f"Cannot finalize GPU state {prior_state!r}; expected a scored or recoverable run."
