@@ -230,7 +230,7 @@ def train(args: argparse.Namespace) -> None:
     (run_dir / "resolved_config.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False), encoding="utf-8")
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, FileNotFoundError):
         commit = "unavailable"
     (run_dir / "git_commit.txt").write_text(commit + "\n", encoding="utf-8")
     _write_json(run_dir / "environment.json", {"python": sys.version, "platform": platform.platform(), "torch": torch.__version__, "cuda_available": torch.cuda.is_available()})
