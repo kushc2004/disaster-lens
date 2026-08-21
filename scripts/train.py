@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -102,7 +103,12 @@ def main() -> None:
     use_class_weights = bool(trainer["use_class_weights"])
     checkpoint_dir = ROOT / trainer["checkpoint_dir"]
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    weights_path = checkpoint_dir / "class_weights.json"
+    # A remote orchestrator may supply a durable train-split cache shared by
+    # otherwise independent run directories.  The payload is still keyed by
+    # the exact train IDs below, so it cannot leak validation/test labels or be
+    # reused for a different split accidentally.
+    supplied_weights_path = os.environ.get("DISASTERLENS_CLASS_WEIGHTS_PATH") or _value(overrides, "class_weights_path")
+    weights_path = Path(supplied_weights_path) if supplied_weights_path else checkpoint_dir / "class_weights.json"
     weights = None
     if use_class_weights:
         tile_ids = [sample.tile_id for sample in train_samples]

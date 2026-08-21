@@ -39,6 +39,8 @@ KAGGLE_DATASET_SLUG = "kushchaudhari/bright-dataset"
 KAGGLE_ARCHIVE_URL = f"https://www.kaggle.com/api/v1/datasets/download/{KAGGLE_DATASET_SLUG}"
 IMAGE_M1_CACHE = "/root/modal-m1-cache"
 EXPECTED_TILE_COUNT = 4_246
+ARCHIVE_NAME = "bright-dataset.zip"
+LOCAL_BRIGHT_ROOT = Path("/tmp/disasterlens-bright")
 
 # L40S is the default cost/performance choice for the 512px BRIGHT runs.  Set
 # this single constant to "A100-40GB" if an A100 is preferred for a run.
@@ -116,6 +118,32 @@ def _input_is_complete(input_root: Path) -> bool:
     )
 
 
+def _archive_path(input_root: Path) -> Path:
+    return input_root / ARCHIVE_NAME
+
+
+def _download_archive(destination: Path) -> int:
+    """Download the public archive with durable, useful progress logs."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".partial")
+    if temporary.exists():
+        temporary.unlink()
+    print(f"[bootstrap] downloading public Kaggle dataset archive: {KAGGLE_DATASET_SLUG}", flush=True)
+    downloaded = 0
+    next_report = 512 * 1024 * 1024
+    request = urllib.request.Request(KAGGLE_ARCHIVE_URL, headers={"User-Agent": "disaster-lens-modal/1.0"})
+    with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
+        while chunk := response.read(32 * 1024 * 1024):
+            output.write(chunk)
+            downloaded += len(chunk)
+            if downloaded >= next_report:
+                print(f"[bootstrap] archive download: {downloaded / (1024 ** 3):.1f} GiB", flush=True)
+                next_report += 512 * 1024 * 1024
+    temporary.replace(destination)
+    print(f"[bootstrap] archive download complete: {downloaded / (1024 ** 3):.2f} GiB", flush=True)
+    return downloaded
+
+
 def _find_unique_modality_directory(extract_root: Path, suffix: str) -> Path:
     """Locate the one directory holding every official tile for one modality."""
     candidates = sorted(
@@ -152,10 +180,28 @@ def _safe_extract(archive: zipfile.ZipFile, destination: Path) -> None:
 def bootstrap_official_bright(force: bool = False) -> dict[str, object]:
     """Download public official BRIGHT directly into the persistent input Volume."""
     input_root = Path(INPUT_MOUNT)
-    if _input_is_complete(input_root) and not force:
-        result = {"state": "already_ready", "input_root": str(input_root), "dataset": KAGGLE_DATASET_SLUG}
-        print(f"[bootstrap] reusing validated official BRIGHT input: {input_root}", flush=True)
+    archive_path = _archive_path(input_root)
+    if _input_is_complete(input_root) and archive_path.is_file() and not force:
+        result = {"state": "already_ready", "input_root": str(input_root), "dataset": KAGGLE_DATASET_SLUG, "archive": str(archive_path)}
+        print(f"[bootstrap] reusing validated official BRIGHT input and archive: {input_root}", flush=True)
         return result
+
+    # The original extracted Volume is valid, but opening thousands of TIFFs
+    # across a network mount is slow. Keep one verified ZIP beside it so each
+    # GPU container can make one sequential local-SSD copy and extract locally.
+    if _input_is_complete(input_root) and not force:
+        downloaded = _download_archive(archive_path)
+        with zipfile.ZipFile(archive_path) as archive:
+            corrupt_member = archive.testzip()
+            if corrupt_member:
+                raise RuntimeError(f"Persisted Kaggle archive is corrupt at: {corrupt_member}")
+        _write_json(input_root / "bootstrap.json", {
+            "state": "ready", "dataset": KAGGLE_DATASET_SLUG, "input_root": str(input_root),
+            "archive": str(archive_path), "archive_bytes": downloaded,
+        })
+        input_volume.commit()
+        print("[bootstrap] committed reusable verified BRIGHT archive", flush=True)
+        return {"state": "archive_added", "input_root": str(input_root), "dataset": KAGGLE_DATASET_SLUG, "archive": str(archive_path)}
 
     bright_root = input_root / "bright"
     if bright_root.exists() and not force:
@@ -168,22 +214,12 @@ def bootstrap_official_bright(force: bool = False) -> dict[str, object]:
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
-    archive_path = staging / "bright-dataset.zip"
+    archive_path = staging / ARCHIVE_NAME
     extract_root = staging / "extracted"
     extract_root.mkdir()
     try:
-        print(f"[bootstrap] downloading public Kaggle dataset: {KAGGLE_DATASET_SLUG}", flush=True)
-        downloaded = 0
-        next_report = 512 * 1024 * 1024
-        request = urllib.request.Request(KAGGLE_ARCHIVE_URL, headers={"User-Agent": "disaster-lens-modal/1.0"})
-        with urllib.request.urlopen(request, timeout=120) as response, archive_path.open("wb") as output:
-            while chunk := response.read(8 * 1024 * 1024):
-                output.write(chunk)
-                downloaded += len(chunk)
-                if downloaded >= next_report:
-                    print(f"[bootstrap] downloaded {downloaded / (1024 ** 3):.1f} GiB", flush=True)
-                    next_report += 512 * 1024 * 1024
-        print(f"[bootstrap] download complete: {downloaded / (1024 ** 3):.2f} GiB; validating archive", flush=True)
+        downloaded = _download_archive(archive_path)
+        print("[bootstrap] validating archive", flush=True)
         with zipfile.ZipFile(archive_path) as archive:
             corrupt_member = archive.testzip()
             if corrupt_member:
@@ -217,6 +253,9 @@ def bootstrap_official_bright(force: bool = False) -> dict[str, object]:
             "tile_counts": counts, "m1_manifest": str(cache_destination / "bright_manifest.jsonl"),
         }
         _write_json(input_root / "bootstrap.json", result)
+        # Preserve a single sequential source for local GPU staging.  It avoids
+        # repeated high-latency Volume opens during every training epoch.
+        shutil.move(str(archive_path), str(_archive_path(input_root)))
         input_volume.commit()
         print("[bootstrap] committed validated official BRIGHT and existing M1 cache", flush=True)
         return result
@@ -225,14 +264,64 @@ def bootstrap_official_bright(force: bool = False) -> dict[str, object]:
             shutil.rmtree(staging)
 
 
-def _link_inputs() -> Path:
-    """Make root configuration paths resolve without copying official data."""
-    bright_root = Path(INPUT_MOUNT) / "bright"
+def _stage_bright_to_local_ssd() -> Path:
+    """Copy one archive sequentially, then extract official BRIGHT on local SSD."""
+    archive_source = _archive_path(Path(INPUT_MOUNT))
+    if not archive_source.is_file():
+        raise FileNotFoundError(f"Missing persisted BRIGHT archive: {archive_source}")
+    if LOCAL_BRIGHT_ROOT.exists():
+        shutil.rmtree(LOCAL_BRIGHT_ROOT)
+    free_bytes = shutil.disk_usage("/tmp").free
+    required_bytes = archive_source.stat().st_size * 3
+    if free_bytes < required_bytes:
+        raise RuntimeError(
+            f"Insufficient local SSD for BRIGHT staging: free={free_bytes / (1024 ** 3):.1f} GiB, "
+            f"need approximately {required_bytes / (1024 ** 3):.1f} GiB."
+        )
+    staging = Path("/tmp/disasterlens-bright-stage")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    local_archive = staging / ARCHIVE_NAME
+    total = archive_source.stat().st_size
+    copied = 0
+    next_report = 1024 * 1024 * 1024
+    print(f"[modal] staging {total / (1024 ** 3):.2f} GiB BRIGHT archive to local SSD", flush=True)
+    with archive_source.open("rb") as source, local_archive.open("wb") as destination:
+        while chunk := source.read(64 * 1024 * 1024):
+            destination.write(chunk)
+            copied += len(chunk)
+            if copied >= next_report:
+                print(f"[modal] local staging: {copied / (1024 ** 3):.1f}/{total / (1024 ** 3):.1f} GiB", flush=True)
+                next_report += 1024 * 1024 * 1024
+    extract_root = staging / "extracted"
+    extract_root.mkdir()
+    print("[modal] extracting official BRIGHT to local SSD", flush=True)
+    with zipfile.ZipFile(local_archive) as archive:
+        _safe_extract(archive, extract_root)
+    modalities = {"pre-event": "_pre_disaster.tif", "post-event": "_post_disaster.tif", "target": "_building_damage.tif"}
+    LOCAL_BRIGHT_ROOT.mkdir(parents=True)
+    for modality, suffix in modalities.items():
+        source = _find_unique_modality_directory(extract_root, suffix)
+        destination = LOCAL_BRIGHT_ROOT / modality
+        shutil.move(str(source), str(destination))
+        count = _source_tile_count(destination, suffix)
+        if count != EXPECTED_TILE_COUNT:
+            raise RuntimeError(f"Local staging validation failed for {modality}: {count} tiles")
+        print(f"[modal] local {modality}: {count:,} official tiles", flush=True)
+    shutil.rmtree(staging)
+    print(f"[modal] local SSD staging complete: {LOCAL_BRIGHT_ROOT}", flush=True)
+    return LOCAL_BRIGHT_ROOT
+
+
+def _link_inputs(bright_root: Path) -> Path:
+    """Make root configuration paths resolve against the local staged data."""
+    volume_bright_root = Path(INPUT_MOUNT) / "bright"
     manifest_root = Path(INPUT_MOUNT) / "m1-cache" / "manifests"
     required = (
-        bright_root / "pre-event",
-        bright_root / "post-event",
-        bright_root / "target",
+        volume_bright_root / "pre-event",
+        volume_bright_root / "post-event",
+        volume_bright_root / "target",
         manifest_root / "bright_manifest.jsonl",
         manifest_root / "bright_normalization.json",
     )
@@ -340,7 +429,8 @@ def run_pipeline(
     results_volume.commit()
 
     try:
-        bright_root = _link_inputs()
+        local_bright_root = _stage_bright_to_local_ssd()
+        bright_root = _link_inputs(local_bright_root)
         print(f"[modal] GPU request: {GPU}; official BRIGHT: {bright_root}", flush=True)
         prepare_root = results_root / "prepared"
         split_path = prepare_root / "splits" / f"{split_name}.json"
@@ -356,6 +446,11 @@ def run_pipeline(
                 message = f"[modal] reusing persisted prepared split: {split_path}"
                 print(message, flush=True); log_handle.write(message + "\n")
 
+            # This file is intentionally outside the unique run directory.
+            # It contains only counts/weights from the immutable standard
+            # training IDs and prevents a 2,972-TIFF scan at every rerun.
+            class_weight_cache = prepare_root / "class_weights" / f"{split_name}.json"
+            os.environ["DISASTERLENS_CLASS_WEIGHTS_PATH"] = str(class_weight_cache)
             _run_command(
                 [
                     sys.executable, "-u", "cross_disaster_damage_assessment/run.py", "train",
