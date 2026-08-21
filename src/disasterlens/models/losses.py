@@ -28,14 +28,47 @@ def lovasz_softmax_flat(probabilities: torch.Tensor, labels: torch.Tensor) -> to
 
 
 class SegmentationLoss(nn.Module):
-    def __init__(self, *, class_weights: torch.Tensor | None = None, ignore_index: int = 255, lovasz_weight: float = 1.0) -> None:
+    def __init__(
+        self,
+        *,
+        class_weights: torch.Tensor | None = None,
+        ignore_index: int = 255,
+        lovasz_weight: float = 1.0,
+        focal_gamma: float = 0.0,
+    ) -> None:
         super().__init__()
+        if focal_gamma < 0:
+            raise ValueError("focal_gamma must be non-negative")
         self.register_buffer("class_weights", class_weights)
-        self.ignore_index, self.lovasz_weight = ignore_index, lovasz_weight
+        self.ignore_index = ignore_index
+        self.lovasz_weight = lovasz_weight
+        self.focal_gamma = focal_gamma
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        ce = F.cross_entropy(logits, target, weight=self.class_weights, ignore_index=self.ignore_index)
         valid = target != self.ignore_index
+        if not bool(valid.any()):
+            return logits.sum() * 0.0
+        if self.focal_gamma == 0.0:
+            ce = F.cross_entropy(
+                logits, target, weight=self.class_weights,
+                ignore_index=self.ignore_index,
+            )
+        else:
+            log_probabilities = F.log_softmax(logits, dim=1)
+            target_safe = target.masked_fill(~valid, 0)
+            log_pt = log_probabilities.gather(1, target_safe.unsqueeze(1)).squeeze(1)
+            focal = (1 - log_pt.exp()).pow(self.focal_gamma)
+            per_pixel = F.nll_loss(
+                log_probabilities, target, weight=self.class_weights,
+                ignore_index=self.ignore_index, reduction="none",
+            )
+            # Match PyTorch's weighted-CrossEntropy normalization rather than
+            # allowing a rare class's large weight to alter the loss scale.
+            if self.class_weights is None:
+                denominator = valid.sum().to(logits.dtype)
+            else:
+                denominator = self.class_weights[target_safe[valid]].sum()
+            ce = (per_pixel[valid] * focal[valid]).sum() / denominator.clamp_min(1)
         probabilities = logits.softmax(dim=1).permute(0, 2, 3, 1)[valid]
         return ce + self.lovasz_weight * lovasz_softmax_flat(probabilities, target[valid])
 

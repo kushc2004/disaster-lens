@@ -57,7 +57,13 @@ def main() -> None:
     overrides = sys.argv[1:]
     print("[training] loading configuration, official manifest, normalization, and saved split", flush=True)
     data = load_yaml(ROOT / "configs/data/bright.yaml", _config_overrides(overrides, "data"))
-    model_config = load_yaml(ROOT / "configs/model/unet_baseline.yaml", _config_overrides(overrides, "model"))
+    model_config_path = _value(overrides, "model_config_path", "configs/model/unet_baseline.yaml")
+    model_config_file = Path(model_config_path)
+    if not model_config_file.is_absolute():
+        model_config_file = ROOT / model_config_file
+    if not model_config_file.is_file():
+        raise FileNotFoundError(f"Model configuration not found: {model_config_file}")
+    model_config = load_yaml(model_config_file, _config_overrides(overrides, "model"))
     trainer = load_yaml(ROOT / "configs/trainer/unet_baseline.yaml", _config_overrides(overrides, "trainer"))
     split_path = _value(overrides, "split_path")
     if not split_path:
@@ -145,8 +151,10 @@ def main() -> None:
         flush=True,
     )
     print(
-        "[training] loss: CrossEntropy + "
-        f"{float(model_config['lovasz_weight']):g} * Lovasz-Softmax; "
+        "[training] loss: "
+        + (f"Focal(gamma={float(model_config.get('focal_gamma', 0.0)):g})" if float(model_config.get("focal_gamma", 0.0)) else "CrossEntropy")
+        + " + "
+        + f"{float(model_config['lovasz_weight']):g} * Lovasz-Softmax; "
         f"class weights={'enabled' if use_class_weights else 'disabled'}",
         flush=True,
     )
@@ -173,7 +181,7 @@ def main() -> None:
     }
     (checkpoint_dir / "config.json").write_text(json.dumps(run_config, indent=2) + "\n", encoding="utf-8")
     print(f"[training] checkpoints will be written to {checkpoint_dir}", flush=True)
-    history = Trainer(model, optimizer, SegmentationLoss(class_weights=weights, lovasz_weight=float(model_config["lovasz_weight"])), device, checkpoint_dir, amp=bool(trainer["amp"])).fit(train_loader, val_loader, epochs=epochs, scheduler=scheduler)
+    history = Trainer(model, optimizer, SegmentationLoss(class_weights=weights, lovasz_weight=float(model_config["lovasz_weight"]), focal_gamma=float(model_config.get("focal_gamma", 0.0))), device, checkpoint_dir, amp=bool(trainer["amp"])).fit(train_loader, val_loader, epochs=epochs, scheduler=scheduler)
     best_record = max(history, key=lambda record: float(record["val_f1_damage"]))
     (checkpoint_dir / "metrics.json").write_text(json.dumps({"best": best_record, "history": history}, indent=2) + "\n", encoding="utf-8")
     if tiny_overfit:

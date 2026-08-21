@@ -222,7 +222,12 @@ def train(args: argparse.Namespace) -> None:
         for tile_id in tile_ids
     ).to_parquet(run_dir / "split_manifest.parquet", index=False)
     resolved = {
-        "project": "cross_disaster_damage_assessment", "experiment": "E1" if args.model == "unet" else "E2",
+        "project": "cross_disaster_damage_assessment",
+        "experiment": (
+            "E1" if args.model == "unet"
+            else "E1b" if args.model == "unet_focal_lovasz"
+            else "E2"
+        ),
         "model": args.model, "source_data": data, "split_source": str(split_path),
         "trainer": {"epochs": args.epochs, "seed": args.seed, "batch_size": args.batch_size, "num_workers": args.workers, "crop_size": args.crop_size, "device": args.device, "event_balanced_sampling": False},
         "evaluation": "shared evaluate_by_event on validation and test partitions",
@@ -234,14 +239,15 @@ def train(args: argparse.Namespace) -> None:
         commit = "unavailable"
     (run_dir / "git_commit.txt").write_text(commit + "\n", encoding="utf-8")
     _write_json(run_dir / "environment.json", {"python": sys.version, "platform": platform.platform(), "torch": torch.__version__, "cuda_available": torch.cuda.is_available()})
-    if args.model == "unet":
-        command = [sys.executable, "-u", "scripts/train.py", f"split_path={split_path}", f"trainer.checkpoint_dir={run_dir}", *_shared_overrides(args, run_dir)]
+    if args.model in {"unet", "unet_focal_lovasz"}:
+        model_config = "configs/model/unet_baseline.yaml" if args.model == "unet" else "configs/model/unet_focal_lovasz.yaml"
+        command = [sys.executable, "-u", "scripts/train.py", f"split_path={split_path}", f"trainer.checkpoint_dir={run_dir}", f"model_config_path={model_config}", *_shared_overrides(args, run_dir)]
     else:
         command = [sys.executable, "-u", "scripts/train_m3.py", f"split_path={split_path}", f"split_name={split_path.stem}", f"run_dir={run_dir}", "resume=true", *_shared_overrides(args, run_dir)]
     print("[train] " + " ".join(map(str, command)), flush=True)
     subprocess.run(command, cwd=ROOT, check=True)
     # M2 calls its training record metrics.json; reserve that name for event evaluation.
-    if args.model == "unet" and (run_dir / "metrics.json").is_file():
+    if args.model in {"unet", "unet_focal_lovasz"} and (run_dir / "metrics.json").is_file():
         shutil.move(run_dir / "metrics.json", run_dir / "training_metrics.json")
     if not (run_dir / "checkpoint.pt").is_file() and (run_dir / "best.pt").is_file():
         shutil.copy2(run_dir / "best.pt", run_dir / "checkpoint.pt")
@@ -251,8 +257,8 @@ def train(args: argparse.Namespace) -> None:
 
 
 def _model(model_name: str) -> torch.nn.Module:
-    if model_name == "unet":
-        config = load_yaml(ROOT / "configs" / "model" / "unet_baseline.yaml")
+    if model_name in {"unet", "unet_focal_lovasz"}:
+        config = load_yaml(ROOT / "configs" / "model" / ("unet_baseline.yaml" if model_name == "unet" else "unet_focal_lovasz.yaml"))
         return EarlyFusionUNet(in_channels=int(config["in_channels"]), num_classes=int(config["num_classes"]), base_channels=int(config["base_channels"]))
     if model_name == "siamese_resnet18":
         config = load_yaml(ROOT / "configs" / "model" / "siamese_baseline.yaml")
@@ -384,7 +390,7 @@ def parser() -> argparse.ArgumentParser:
     prep = commands.add_parser("prepare", help="audit existing official manifest and write benchmark splits")
     prep.add_argument("--heldout-event", default="all", help="BRIGHT event ID or 'all' (default)"); prep.add_argument("--seed", type=int, default=42); prep.add_argument("--output-root"); prep.set_defaults(func=prepare)
     train_p = commands.add_parser("train", help="run E1 or E2 on one immutable split")
-    train_p.add_argument("--model", choices=("unet", "siamese_resnet18"), required=True); train_p.add_argument("--split", required=True); train_p.add_argument("--output-root"); train_p.add_argument("--epochs", type=int, default=30); train_p.add_argument("--seed", type=int, default=42); train_p.add_argument("--batch-size", type=int, default=16); train_p.add_argument("--workers", type=int, default=4); train_p.add_argument("--crop-size", type=int, default=512); train_p.add_argument("--device", default="auto"); train_p.set_defaults(func=train)
+    train_p.add_argument("--model", choices=("unet", "unet_focal_lovasz", "siamese_resnet18"), required=True); train_p.add_argument("--split", required=True); train_p.add_argument("--output-root"); train_p.add_argument("--epochs", type=int, default=30); train_p.add_argument("--seed", type=int, default=42); train_p.add_argument("--batch-size", type=int, default=16); train_p.add_argument("--workers", type=int, default=4); train_p.add_argument("--crop-size", type=int, default=512); train_p.add_argument("--device", default="auto"); train_p.set_defaults(func=train)
     evaluate_p = commands.add_parser("evaluate", help="save event and class metrics for a trained run")
     evaluate_p.add_argument("--run-dir", required=True); evaluate_p.add_argument("--partition", choices=("val", "test"), required=True); evaluate_p.add_argument("--batch-size", type=int, default=16); evaluate_p.add_argument("--workers", type=int, default=4); evaluate_p.add_argument("--device", default="auto"); evaluate_p.add_argument("--prediction-compression", choices=("deflated", "stored"), default="deflated", help="Use 'stored' for lossless uncompressed bundles when GPU time matters."); evaluate_p.set_defaults(func=evaluate)
     cal = commands.add_parser("calibrate", help="fit validation-only temperature and score heldout predictions"); cal.add_argument("--run-dir", required=True); cal.set_defaults(func=calibrate)

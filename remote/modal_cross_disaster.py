@@ -402,8 +402,8 @@ def run_pipeline(
     force_prepare: bool = False,
 ) -> dict[str, object]:
     """Prepare, train, and score on GPU; persist everything before release."""
-    if model not in {"unet", "siamese_resnet18"}:
-        raise ValueError("model must be 'unet' or 'siamese_resnet18'.")
+    if model not in {"unet", "unet_focal_lovasz", "siamese_resnet18"}:
+        raise ValueError("model must be 'unet', 'unet_focal_lovasz', or 'siamese_resnet18'.")
     if split_name != "standard":
         raise ValueError("This runner currently accepts the persisted standard split only.")
     if epochs < 1 or batch_size < 1 or workers < 0:
