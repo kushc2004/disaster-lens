@@ -115,6 +115,11 @@ def _link_inputs() -> Path:
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "manifests").symlink_to(manifest_root, target_is_directory=True)
     os.environ["DISASTERLENS_BRIGHT_ROOT"] = str(bright_root)
+    # ``scripts/train.py`` imports the package directly, whereas the focused
+    # runner adds this itself.  Set it once here so both execution paths are
+    # valid in the image without relying on an editable local install.
+    source_root = str(Path(REMOTE_REPO) / "src")
+    os.environ["PYTHONPATH"] = source_root + os.pathsep + os.environ.get("PYTHONPATH", "")
     return bright_root
 
 
