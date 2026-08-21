@@ -60,6 +60,7 @@ image = (
         "rasterio>=1.3",
         "matplotlib>=3.8",
         "scipy>=1.12",
+        "shapely>=2.0",
     )
     .add_local_dir("src", remote_path=f"{REMOTE_REPO}/src", copy=True)
     .add_local_dir("configs", remote_path=f"{REMOTE_REPO}/configs", copy=True)
@@ -396,12 +397,11 @@ def run_pipeline(
     model: str = "unet",
     split_name: str = "standard",
     epochs: int = 30,
-    batch_size: int = 4,
-    workers: int = 2,
-    calibrate: bool = True,
+    batch_size: int = 16,
+    workers: int = 4,
     force_prepare: bool = False,
 ) -> dict[str, object]:
-    """Prepare once, then train/evaluate/calibrate with durable artifacts."""
+    """Prepare, train, and score on GPU; persist everything before release."""
     if model not in {"unet", "siamese_resnet18"}:
         raise ValueError("model must be 'unet' or 'siamese_resnet18'.")
     if split_name != "standard":
@@ -421,7 +421,7 @@ def run_pipeline(
     started = _utc_now()
     _write_json(run_root / "run_spec.json", {
         "run_name": run_name, "model": model, "split": split_name, "epochs": epochs,
-        "batch_size": batch_size, "workers": workers, "calibrate": calibrate,
+        "batch_size": batch_size, "workers": workers,
         "gpu_request": GPU, "started_at_utc": started,
         "bright_root": f"{INPUT_MOUNT}/bright", "m1_manifest_root": f"{INPUT_MOUNT}/m1-cache/manifests",
     })
@@ -466,28 +466,21 @@ def run_pipeline(
                         sys.executable, "-u", "cross_disaster_damage_assessment/run.py", "evaluate",
                         "--run-dir", str(model_run_dir), "--partition", partition,
                         "--batch-size", str(batch_size), "--workers", str(workers),
+                        # Lossless stored bundles avoid per-tile Deflate work
+                        # holding the L40S after model inference is complete.
+                        "--prediction-compression", "stored",
                     ],
                     log_handle=log_handle,
                 )
                 results_volume.commit()
-            if calibrate:
-                _run_command(
-                    [sys.executable, "-u", "cross_disaster_damage_assessment/run.py", "calibrate", "--run-dir", str(model_run_dir)],
-                    log_handle=log_handle,
-                )
-                results_volume.commit()
-            _run_command(
-                [sys.executable, "-u", "cross_disaster_damage_assessment/run.py", "report", "--output-root", str(results_root)],
-                log_handle=log_handle,
-            )
-            log_handle.write("[modal] pipeline completed successfully\n"); log_handle.flush()
+            log_handle.write("[modal] GPU training and scoring completed; artifacts committed before CPU finalization\n"); log_handle.flush()
         result = {
-            "state": "completed", "started_at_utc": started, "completed_at_utc": _utc_now(),
+            "state": "gpu_scoring_completed", "started_at_utc": started, "gpu_completed_at_utc": _utc_now(),
             "run_root": str(run_root), "model_run_dir": str(model_run_dir), "log": str(log_path),
         }
         _write_json(status_path, result)
         results_volume.commit()
-        print(f"[modal] completed; durable artifacts: {run_root}", flush=True)
+        print(f"[modal] GPU scoring complete; durable artifacts: {run_root}", flush=True)
         return result
     except Exception as exc:
         failure = {
@@ -501,12 +494,98 @@ def run_pipeline(
         raise
 
 
+@app.function(
+    image=image,
+    timeout=60 * 60 * 2,
+    volumes={RESULTS_MOUNT: results_volume},
+)
+def finalize_run(run_name: str, *, calibrate: bool = True) -> dict[str, object]:
+    """Run calibration, figures, and reports after the GPU is no longer allocated.
+
+    The GPU stage commits ``checkpoint.pt``, training history, metrics, and
+    lossless prediction bundles first.  This CPU function intentionally reads
+    only the results Volume, so a finalization failure cannot discard or alter
+    the already-durable GPU artifacts.
+    """
+    run_name = _safe_run_name(run_name)
+    results_root = Path(RESULTS_MOUNT)
+    run_root = results_root / "runs" / run_name
+    status_path = run_root / "status.json"
+    gpu_stage_path = run_root / "gpu_stage.json"
+    if not run_root.is_dir() or not status_path.is_file():
+        raise FileNotFoundError(f"No durable GPU run found at {run_root}")
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    prior_state = str(status.get("state"))
+    recoverable_states = {"gpu_scoring_completed", "failed", "cpu_finalization_failed"}
+    if prior_state not in recoverable_states:
+        raise RuntimeError(
+            f"Cannot finalize GPU state {prior_state!r}; expected a scored or recoverable run."
+        )
+    model_run_dir = Path(str(status["model_run_dir"]))
+    required = (model_run_dir / "checkpoint.pt", model_run_dir / "evaluation" / "val" / "metrics.json", model_run_dir / "evaluation" / "test" / "metrics.json")
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise RuntimeError("Refusing CPU finalization; GPU artifacts are incomplete: " + ", ".join(missing))
+
+    source_root = str(Path(REMOTE_REPO) / "src")
+    os.environ["PYTHONPATH"] = source_root + os.pathsep + os.environ.get("PYTHONPATH", "")
+    # A previous failure is recoverable only after the required immutable GPU
+    # artifacts above are present.  This covers an old calibration/report-only
+    # failure without ever treating a failed training run as successful.
+    _write_json(gpu_stage_path, {**status, "state": "gpu_scoring_completed"})
+    started = _utc_now()
+    _write_json(status_path, {**status, "state": "cpu_finalizing", "cpu_finalization_started_at_utc": started})
+    results_volume.commit()
+    log_path = run_root / "run.log"
+    try:
+        with log_path.open("a", encoding="utf-8", buffering=1) as log_handle:
+            message = "[modal] CPU finalization started after GPU release"
+            print(message, flush=True); log_handle.write(message + "\n")
+            if calibrate:
+                _run_command(
+                    [sys.executable, "-u", "cross_disaster_damage_assessment/run.py", "calibrate", "--run-dir", str(model_run_dir)],
+                    log_handle=log_handle,
+                )
+                results_volume.commit()
+            _run_command(
+                [sys.executable, "-u", "cross_disaster_damage_assessment/run.py", "report", "--output-root", str(results_root)],
+                log_handle=log_handle,
+            )
+            log_handle.write("[modal] CPU finalization completed successfully\n"); log_handle.flush()
+        result = {
+            **{key: value for key, value in status.items() if key not in {"error", "traceback", "failed_at_utc"}},
+            "state": "completed",
+            "cpu_finalization_started_at_utc": started,
+            "completed_at_utc": _utc_now(),
+            "calibration_completed": calibrate,
+            "recovered_from_prior_state": prior_state if prior_state != "gpu_scoring_completed" else None,
+        }
+        _write_json(status_path, result)
+        results_volume.commit()
+        print(f"[modal] completed; all durable artifacts: {run_root}", flush=True)
+        return result
+    except Exception as exc:
+        failure = {
+            **status,
+            "state": "cpu_finalization_failed",
+            "cpu_finalization_started_at_utc": started,
+            "failed_at_utc": _utc_now(),
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+            "gpu_artifacts_preserved": True,
+        }
+        _write_json(status_path, failure)
+        results_volume.commit()
+        print(f"[modal] CPU finalization failed; GPU artifacts remain durable at {run_root}", flush=True)
+        raise
+
+
 @app.local_entrypoint()
 def main(
     model: str = "unet",
     epochs: int = 30,
-    batch_size: int = 4,
-    workers: int = 2,
+    batch_size: int = 16,
+    workers: int = 4,
     run_name: str = "",
     no_calibrate: bool = False,
     force_prepare: bool = False,
@@ -521,6 +600,8 @@ def main(
         run_name = f"{model}-standard-{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}"
     result = run_pipeline.remote(
         run_name=run_name, model=model, epochs=epochs, batch_size=batch_size,
-        workers=workers, calibrate=not no_calibrate, force_prepare=force_prepare,
+        workers=workers, force_prepare=force_prepare,
     )
-    print("[modal] result:\n" + json.dumps(result, indent=2, sort_keys=True), flush=True)
+    print("[modal] GPU result:\n" + json.dumps(result, indent=2, sort_keys=True), flush=True)
+    finalized = finalize_run.remote(run_name, calibrate=not no_calibrate)
+    print("[modal] final result:\n" + json.dumps(finalized, indent=2, sort_keys=True), flush=True)

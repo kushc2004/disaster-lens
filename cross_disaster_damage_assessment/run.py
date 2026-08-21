@@ -279,9 +279,24 @@ def evaluate(args: argparse.Namespace) -> None:
     state = torch.load(checkpoint, map_location=device, weights_only=False)
     model.load_state_dict(state["model_state"])
     model.to(device)
-    loader = DataLoader(BrightDataset(selected, normalization=normalization), batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda", collate_fn=collate_samples)
+    loader = DataLoader(
+        BrightDataset(selected, normalization=normalization),
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=args.workers > 0,
+        collate_fn=collate_samples,
+    )
     predictions = run_dir / "predictions" / partition
-    result = evaluate_by_event(model, loader, device, disaster_types={sample.event_id: sample.disaster_type for sample in selected}, predictions_dir=predictions)
+    result = evaluate_by_event(
+        model,
+        loader,
+        device,
+        disaster_types={sample.event_id: sample.disaster_type for sample in selected},
+        predictions_dir=predictions,
+        compress_predictions=args.prediction_compression == "deflated",
+    )
     result.update({"project": "cross_disaster_damage_assessment", "experiment": config["experiment"], "model": config["model"], "partition": partition, "checkpoint": "checkpoint.pt", "split": "split.json"})
     target = run_dir / "evaluation" / partition
     _write_json(target / "metrics.json", result)
@@ -369,9 +384,9 @@ def parser() -> argparse.ArgumentParser:
     prep = commands.add_parser("prepare", help="audit existing official manifest and write benchmark splits")
     prep.add_argument("--heldout-event", default="all", help="BRIGHT event ID or 'all' (default)"); prep.add_argument("--seed", type=int, default=42); prep.add_argument("--output-root"); prep.set_defaults(func=prepare)
     train_p = commands.add_parser("train", help="run E1 or E2 on one immutable split")
-    train_p.add_argument("--model", choices=("unet", "siamese_resnet18"), required=True); train_p.add_argument("--split", required=True); train_p.add_argument("--output-root"); train_p.add_argument("--epochs", type=int, default=30); train_p.add_argument("--seed", type=int, default=42); train_p.add_argument("--batch-size", type=int, default=4); train_p.add_argument("--workers", type=int, default=2); train_p.add_argument("--crop-size", type=int, default=512); train_p.add_argument("--device", default="auto"); train_p.set_defaults(func=train)
+    train_p.add_argument("--model", choices=("unet", "siamese_resnet18"), required=True); train_p.add_argument("--split", required=True); train_p.add_argument("--output-root"); train_p.add_argument("--epochs", type=int, default=30); train_p.add_argument("--seed", type=int, default=42); train_p.add_argument("--batch-size", type=int, default=16); train_p.add_argument("--workers", type=int, default=4); train_p.add_argument("--crop-size", type=int, default=512); train_p.add_argument("--device", default="auto"); train_p.set_defaults(func=train)
     evaluate_p = commands.add_parser("evaluate", help="save event and class metrics for a trained run")
-    evaluate_p.add_argument("--run-dir", required=True); evaluate_p.add_argument("--partition", choices=("val", "test"), required=True); evaluate_p.add_argument("--batch-size", type=int, default=4); evaluate_p.add_argument("--workers", type=int, default=2); evaluate_p.add_argument("--device", default="auto"); evaluate_p.set_defaults(func=evaluate)
+    evaluate_p.add_argument("--run-dir", required=True); evaluate_p.add_argument("--partition", choices=("val", "test"), required=True); evaluate_p.add_argument("--batch-size", type=int, default=16); evaluate_p.add_argument("--workers", type=int, default=4); evaluate_p.add_argument("--device", default="auto"); evaluate_p.add_argument("--prediction-compression", choices=("deflated", "stored"), default="deflated", help="Use 'stored' for lossless uncompressed bundles when GPU time matters."); evaluate_p.set_defaults(func=evaluate)
     cal = commands.add_parser("calibrate", help="fit validation-only temperature and score heldout predictions"); cal.add_argument("--run-dir", required=True); cal.set_defaults(func=calibrate)
     rep = commands.add_parser("report", help="compile completed saved test metrics only"); rep.add_argument("--output-root"); rep.set_defaults(func=report)
     return root

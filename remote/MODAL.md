@@ -62,17 +62,28 @@ disconnects. The command prints a Modal App URL; use that URL or `modal app
 logs` for live batch/epoch output. Every line is also mirrored to a durable
 `run.log` in the results Volume. At every completed epoch it commits the
 Volume, so the latest completed checkpoint and log are not dependent on
-container lifetime.
+container lifetime. After GPU training plus validation/test inference have
+been committed, a separate CPU Modal function runs temperature calibration,
+figures, and report generation. A CPU finalization failure therefore cannot
+discard a checkpoint, evaluation metrics, or prediction bundles.
+
+The default U-Net settings are `--batch-size 16 --workers 4` on the L40S.
+They reduce a standard-split epoch from 743 to about 186 training batches and
+each 638-tile evaluation from 160 to about 40 batches. The pseudo-Siamese
+ResNet-18 is more memory-intensive; start it with `--batch-size 8 --workers 4`.
+GPU inference is retained on the GPU. Only CPU-bound calibration, figure, and
+report work moves to CPU; stored (lossless, uncompressed) prediction bundles
+avoid Deflate compression holding the GPU allocation.
 
 ```bash
-uv run --group modal modal run --detach remote/modal_cross_disaster.py --epochs 30 --batch-size 4 --workers 2
+uv run --group modal modal run --detach remote/modal_cross_disaster.py --epochs 30 --batch-size 16 --workers 4
 ```
 
 Give an explicit unique name when you want a memorable output directory:
 
 ```bash
 uv run --group modal modal run --detach remote/modal_cross_disaster.py \
-  --run-name unet-standard-30e-l40s --epochs 30 --batch-size 4 --workers 2
+  --run-name unet-standard-30e-l40s --epochs 30 --batch-size 16 --workers 4
 ```
 
 The first launch creates `prepared/` once. Later launches reuse its immutable
@@ -95,7 +106,9 @@ Each completed run has this layout in the results Volume:
 /runs/<run-name>/runs/unet/standard/checkpoint.pt
 /runs/<run-name>/runs/unet/standard/training_metrics.json
 /runs/<run-name>/runs/unet/standard/evaluation/{val,test}/metrics.json
+/runs/<run-name>/runs/unet/standard/predictions/{val,test}/
 /runs/<run-name>/runs/unet/standard/calibration/
+/runs/<run-name>/gpu_stage.json
 ```
 
 Download all durable artifacts after the run:
@@ -106,4 +119,13 @@ uv run --group modal modal volume get disasterlens-results-v1 runs/unet-standard
 
 If a run fails, download the same directory. `status.json` contains the
 exception and traceback; `run.log` retains the streamed command output up to
-the failure.
+the failure. If the status is `failed` but the checkpoint and both evaluation
+metric files exist, it was a post-scoring failure and its GPU artifacts are
+safe. After pulling this code, recover calibration/report generation without a
+GPU rerun:
+
+```bash
+uv run --group modal modal run \
+  remote/modal_cross_disaster.py::finalize_run \
+  --run-name <run-name>
+```

@@ -97,8 +97,14 @@ def main() -> None:
     val_transform = SynchronizedGeometry(seed=int(trainer["seed"]), crop_size=crop_size, randomize=False) if tiny_overfit else None
     val_data = BrightDataset(val_samples, transform=val_transform, normalization=normalization)
     batch_size, workers = int(trainer["batch_size"]), int(trainer["num_workers"])
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True, collate_fn=collate_samples)
-    val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_samples)
+    loader_options = {
+        "num_workers": workers,
+        "pin_memory": True,
+        "persistent_workers": workers > 0,
+        "collate_fn": collate_samples,
+    }
+    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, **loader_options)
+    val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False, **loader_options)
     device = _device(str(trainer["device"]))
     use_class_weights = bool(trainer["use_class_weights"])
     checkpoint_dir = ROOT / trainer["checkpoint_dir"]

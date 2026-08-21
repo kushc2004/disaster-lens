@@ -100,8 +100,16 @@ def evaluate_by_event(
     *,
     disaster_types: dict[str, str],
     predictions_dir: Path | None = None,
+    compress_predictions: bool = True,
 ) -> dict[str, Any]:
-    """Evaluate pooled and event metrics, optionally persisting raw logits."""
+    """Evaluate pooled and event metrics, optionally persisting raw logits.
+
+    ``np.savez_compressed`` is intentionally optional.  Deflate compression is
+    CPU-bound and made the GPU allocation wait on hundreds of per-tile writes.
+    Remote runs therefore save NumPy's uncompressed-but-lossless ``.npz``
+    bundles, commit them to durable storage, and leave only calibration and
+    report generation for a CPU function after the GPU has been released.
+    """
     model.eval()
     matrices: dict[str, torch.Tensor] = {}
     calibration: dict[str, CalibrationBins] = defaultdict(CalibrationBins)
@@ -150,10 +158,8 @@ def evaluate_by_event(
                         post_sar=sar[row].float().cpu().numpy(),
                     )
                     saved_visual_example = True
-                np.savez_compressed(
-                    predictions_dir / f"{tile_id}.npz",
-                    **payload,
-                )
+                saver = np.savez_compressed if compress_predictions else np.savez
+                saver(predictions_dir / f"{tile_id}.npz", **payload)
         if batch_index == 1 or batch_index % 25 == 0 or batch_index == total_batches:
             print(f"[event-evaluation] batch {batch_index}/{total_batches}", flush=True)
 

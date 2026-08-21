@@ -228,6 +228,7 @@ def train(kind: str) -> None:
         "batch_size": int(trainer["batch_size"]),
         "num_workers": int(trainer["num_workers"]),
         "pin_memory": True,
+        "persistent_workers": int(trainer["num_workers"]) > 0,
         "collate_fn": collate_samples,
     }
     train_loader = DataLoader(
