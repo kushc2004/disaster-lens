@@ -6,8 +6,9 @@ artifacts, or the official dataset.
 
 It uses two Modal Volume v2 volumes:
 
-- `disasterlens-bright-v1` — read-only official BRIGHT input plus the existing
-  M1 manifest and normalization statistics.
+- `disasterlens-bright-v1` — official BRIGHT input plus the existing M1
+  manifest and normalization statistics. Bootstrap writes this Volume once;
+  training mounts it read-only.
 - `disasterlens-results-v1` — shared prepared audit/splits and every run's
   checkpoints, metrics, figures, predictions, logs, and status file.
 
@@ -25,8 +26,16 @@ uv run --group modal modal volume create --version=2 disasterlens-bright-v1
 uv run --group modal modal volume create --version=2 disasterlens-results-v1
 ```
 
-Upload only the official, extracted BRIGHT files. The volume must contain this
-exact layout; it intentionally does not accept zip files or generated samples:
+The project downloads the public official Kaggle dataset
+`kushchaudhari/bright-dataset` straight into Modal. It never uploads the raw
+dataset from the laptop and it never generates data. The runner also copies
+the completed M1 manifest and normalization statistics from the local
+`.kaggle-outputs/latest/...` cache into the input Volume.
+
+On the first launch, bootstrap downloads the 13.26 GB Kaggle archive, extracts
+it, confirms exactly 4,246 tiles for each source modality, copies the M1 cache,
+and commits the Volume. Later launches validate and reuse it immediately. The
+committed layout is:
 
 ```text
 /bright/pre-event/<event>/*_pre_disaster.tif
@@ -36,24 +45,14 @@ exact layout; it intentionally does not accept zip files or generated samples:
 /m1-cache/manifests/bright_normalization.json
 ```
 
-For a local extracted BRIGHT directory and the M1 cache directory, upload the
-three dataset folders and the two M1 artifacts. Replace the two placeholder
-paths below; do not upload `data/raw` unless it is the official BRIGHT root.
+You can bootstrap without starting a GPU run:
 
 ```bash
-uv run --group modal modal volume put disasterlens-bright-v1 /absolute/path/to/bright/pre-event /bright/pre-event
-uv run --group modal modal volume put disasterlens-bright-v1 /absolute/path/to/bright/post-event /bright/post-event
-uv run --group modal modal volume put disasterlens-bright-v1 /absolute/path/to/bright/target /bright/target
-uv run --group modal modal volume put disasterlens-bright-v1 /absolute/path/to/m1/manifests/bright_manifest.jsonl /m1-cache/manifests/bright_manifest.jsonl
-uv run --group modal modal volume put disasterlens-bright-v1 /absolute/path/to/m1/manifests/bright_normalization.json /m1-cache/manifests/bright_normalization.json
+uv run --group modal modal run remote/modal_cross_disaster.py::bootstrap_official_bright
 ```
 
-Inspect before spending GPU time:
-
-```bash
-uv run --group modal modal volume ls disasterlens-bright-v1 /bright
-uv run --group modal modal volume ls disasterlens-bright-v1 /m1-cache/manifests
-```
+The normal training command runs that same safe bootstrap automatically. Use
+`--skip-bootstrap` only after an already validated input Volume is present.
 
 ## Launch and monitor
 

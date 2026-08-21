@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Persistent Modal GPU runner for the focused BRIGHT cross-disaster benchmark.
 
-Inputs are deliberately read-only.  The official BRIGHT files and the M1
-manifest are uploaded once to ``disasterlens-bright-v1``.  Each invocation
+Inputs are deliberately read-only during training. The official public BRIGHT
+archive is downloaded directly from Kaggle once into ``disasterlens-bright-v1``
+and paired with the verified M1 manifest. Each invocation
 creates a unique run directory in ``disasterlens-results-v1`` and streams the
 underlying training output both to Modal's live logs and to ``run.log``.
 
@@ -20,6 +21,8 @@ import shutil
 import subprocess
 import sys
 import traceback
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Iterable
 
@@ -32,6 +35,10 @@ RESULTS_VOLUME_NAME = "disasterlens-results-v1"
 REMOTE_REPO = "/root/disaster-lens"
 INPUT_MOUNT = "/mnt/disasterlens-input"
 RESULTS_MOUNT = "/mnt/disasterlens-results"
+KAGGLE_DATASET_SLUG = "kushchaudhari/bright-dataset"
+KAGGLE_ARCHIVE_URL = f"https://www.kaggle.com/api/v1/datasets/download/{KAGGLE_DATASET_SLUG}"
+IMAGE_M1_CACHE = "/root/modal-m1-cache"
+EXPECTED_TILE_COUNT = 4_246
 
 # L40S is the default cost/performance choice for the 512px BRIGHT runs.  Set
 # this single constant to "A100-40GB" if an A100 is preferred for a run.
@@ -61,6 +68,18 @@ image = (
         copy=True,
     )
     .add_local_file("pyproject.toml", remote_path=f"{REMOTE_REPO}/pyproject.toml", copy=True)
+    # These are the already completed M1 artifacts. They are copied into the
+    # input Volume by the bootstrap function, so M0/M1 never rerun remotely.
+    .add_local_file(
+        ".kaggle-outputs/latest/disaster-lens/data/manifests/bright_manifest.jsonl",
+        remote_path=f"{IMAGE_M1_CACHE}/bright_manifest.jsonl",
+        copy=True,
+    )
+    .add_local_file(
+        ".kaggle-outputs/latest/disaster-lens/data/manifests/bright_normalization.json",
+        remote_path=f"{IMAGE_M1_CACHE}/bright_normalization.json",
+        copy=True,
+    )
 )
 
 
@@ -77,6 +96,133 @@ def _safe_run_name(value: str) -> str:
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _source_tile_count(directory: Path, suffix: str) -> int:
+    return sum(1 for path in directory.glob(f"*{suffix}") if path.is_file())
+
+
+def _input_is_complete(input_root: Path) -> bool:
+    bright_root = input_root / "bright"
+    expected = {
+        "pre-event": "_pre_disaster.tif",
+        "post-event": "_post_disaster.tif",
+        "target": "_building_damage.tif",
+    }
+    return (
+        all(_source_tile_count(bright_root / name, suffix) == EXPECTED_TILE_COUNT for name, suffix in expected.items())
+        and (input_root / "m1-cache/manifests/bright_manifest.jsonl").is_file()
+        and (input_root / "m1-cache/manifests/bright_normalization.json").is_file()
+    )
+
+
+def _find_unique_modality_directory(extract_root: Path, suffix: str) -> Path:
+    """Locate the one directory holding every official tile for one modality."""
+    candidates = sorted(
+        {
+            file_path.parent
+            for file_path in extract_root.rglob(f"*{suffix}")
+            if file_path.is_file()
+        }
+    )
+    valid = [path for path in candidates if _source_tile_count(path, suffix) == EXPECTED_TILE_COUNT]
+    if len(valid) != 1:
+        raise RuntimeError(
+            f"Expected exactly one directory with {EXPECTED_TILE_COUNT} '*{suffix}' files in "
+            f"the official Kaggle archive; found {[str(path) for path in valid] or candidates}."
+        )
+    return valid[0]
+
+
+def _safe_extract(archive: zipfile.ZipFile, destination: Path) -> None:
+    """Extract only archive members whose resolved paths remain in staging."""
+    destination_resolved = destination.resolve()
+    for member in archive.infolist():
+        member_path = (destination / member.filename).resolve()
+        if not member_path.is_relative_to(destination_resolved):
+            raise RuntimeError(f"Refusing unsafe archive path: {member.filename}")
+    archive.extractall(destination)
+
+
+@app.function(
+    image=image,
+    timeout=60 * 60 * 4,
+    volumes={INPUT_MOUNT: input_volume},
+)
+def bootstrap_official_bright(force: bool = False) -> dict[str, object]:
+    """Download public official BRIGHT directly into the persistent input Volume."""
+    input_root = Path(INPUT_MOUNT)
+    if _input_is_complete(input_root) and not force:
+        result = {"state": "already_ready", "input_root": str(input_root), "dataset": KAGGLE_DATASET_SLUG}
+        print(f"[bootstrap] reusing validated official BRIGHT input: {input_root}", flush=True)
+        return result
+
+    bright_root = input_root / "bright"
+    if bright_root.exists() and not force:
+        raise RuntimeError(
+            "Input Volume contains an incomplete BRIGHT directory. Refusing to overwrite it. "
+            "Inspect it, then rerun bootstrap with force=True if replacement is intended."
+        )
+
+    staging = input_root / ".bootstrap-staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    archive_path = staging / "bright-dataset.zip"
+    extract_root = staging / "extracted"
+    extract_root.mkdir()
+    try:
+        print(f"[bootstrap] downloading public Kaggle dataset: {KAGGLE_DATASET_SLUG}", flush=True)
+        downloaded = 0
+        next_report = 512 * 1024 * 1024
+        request = urllib.request.Request(KAGGLE_ARCHIVE_URL, headers={"User-Agent": "disaster-lens-modal/1.0"})
+        with urllib.request.urlopen(request, timeout=120) as response, archive_path.open("wb") as output:
+            while chunk := response.read(8 * 1024 * 1024):
+                output.write(chunk)
+                downloaded += len(chunk)
+                if downloaded >= next_report:
+                    print(f"[bootstrap] downloaded {downloaded / (1024 ** 3):.1f} GiB", flush=True)
+                    next_report += 512 * 1024 * 1024
+        print(f"[bootstrap] download complete: {downloaded / (1024 ** 3):.2f} GiB; validating archive", flush=True)
+        with zipfile.ZipFile(archive_path) as archive:
+            corrupt_member = archive.testzip()
+            if corrupt_member:
+                raise RuntimeError(f"Downloaded Kaggle archive is corrupt at: {corrupt_member}")
+            _safe_extract(archive, extract_root)
+
+        modalities = {
+            "pre-event": "_pre_disaster.tif",
+            "post-event": "_post_disaster.tif",
+            "target": "_building_damage.tif",
+        }
+        if bright_root.exists():
+            shutil.rmtree(bright_root)
+        bright_root.mkdir(parents=True)
+        counts: dict[str, int] = {}
+        for modality, suffix in modalities.items():
+            source = _find_unique_modality_directory(extract_root, suffix)
+            destination = bright_root / modality
+            shutil.move(str(source), str(destination))
+            counts[modality] = _source_tile_count(destination, suffix)
+            print(f"[bootstrap] validated {modality}: {counts[modality]:,} official tiles", flush=True)
+
+        cache_destination = input_root / "m1-cache" / "manifests"
+        cache_destination.mkdir(parents=True, exist_ok=True)
+        for filename in ("bright_manifest.jsonl", "bright_normalization.json"):
+            shutil.copy2(Path(IMAGE_M1_CACHE) / filename, cache_destination / filename)
+        if not _input_is_complete(input_root):
+            raise RuntimeError("Bootstrap validation failed; the input Volume was not committed.")
+        result = {
+            "state": "ready", "dataset": KAGGLE_DATASET_SLUG, "input_root": str(input_root),
+            "tile_counts": counts, "m1_manifest": str(cache_destination / "bright_manifest.jsonl"),
+        }
+        _write_json(input_root / "bootstrap.json", result)
+        input_volume.commit()
+        print("[bootstrap] committed validated official BRIGHT and existing M1 cache", flush=True)
+        return result
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def _link_inputs() -> Path:
@@ -269,8 +415,13 @@ def main(
     run_name: str = "",
     no_calibrate: bool = False,
     force_prepare: bool = False,
+    skip_bootstrap: bool = False,
+    force_bootstrap: bool = False,
 ) -> None:
     """Launch one uniquely named remote run and stream its logs locally."""
+    if not skip_bootstrap:
+        bootstrap = bootstrap_official_bright.remote(force=force_bootstrap)
+        print("[modal] input bootstrap:\n" + json.dumps(bootstrap, indent=2, sort_keys=True), flush=True)
     if not run_name:
         run_name = f"{model}-standard-{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}"
     result = run_pipeline.remote(
