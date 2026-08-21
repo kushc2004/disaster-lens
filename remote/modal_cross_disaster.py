@@ -521,7 +521,24 @@ def finalize_run(run_name: str, *, calibrate: bool = True) -> dict[str, object]:
         raise RuntimeError(
             f"Cannot finalize GPU state {prior_state!r}; expected a scored or recoverable run."
         )
-    model_run_dir = Path(str(status["model_run_dir"]))
+    stored_model_run_dir = status.get("model_run_dir")
+    if stored_model_run_dir:
+        model_run_dir = Path(str(stored_model_run_dir))
+    else:
+        # Older monolithic runs recorded only ``run_root`` when calibration
+        # failed.  Recover only if their already-persisted model directory is
+        # unambiguous; never guess across multiple experiments.
+        candidates = [
+            path
+            for path in (run_root / "runs").glob("*/*")
+            if (path / "checkpoint.pt").is_file()
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                "Cannot infer model run directory from legacy status; expected exactly one "
+                f"checkpoint under {run_root / 'runs'}, found {len(candidates)}."
+            )
+        model_run_dir = candidates[0]
     required = (model_run_dir / "checkpoint.pt", model_run_dir / "evaluation" / "val" / "metrics.json", model_run_dir / "evaluation" / "test" / "metrics.json")
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -532,9 +549,18 @@ def finalize_run(run_name: str, *, calibrate: bool = True) -> dict[str, object]:
     # A previous failure is recoverable only after the required immutable GPU
     # artifacts above are present.  This covers an old calibration/report-only
     # failure without ever treating a failed training run as successful.
-    _write_json(gpu_stage_path, {**status, "state": "gpu_scoring_completed"})
+    recovered_status = {
+        **status,
+        "state": "gpu_scoring_completed",
+        "run_root": str(run_root),
+        "model_run_dir": str(model_run_dir),
+    }
+    _write_json(gpu_stage_path, recovered_status)
     started = _utc_now()
-    _write_json(status_path, {**status, "state": "cpu_finalizing", "cpu_finalization_started_at_utc": started})
+    _write_json(
+        status_path,
+        {**recovered_status, "state": "cpu_finalizing", "cpu_finalization_started_at_utc": started},
+    )
     results_volume.commit()
     log_path = run_root / "run.log"
     try:
@@ -553,7 +579,7 @@ def finalize_run(run_name: str, *, calibrate: bool = True) -> dict[str, object]:
             )
             log_handle.write("[modal] CPU finalization completed successfully\n"); log_handle.flush()
         result = {
-            **{key: value for key, value in status.items() if key not in {"error", "traceback", "failed_at_utc"}},
+            **{key: value for key, value in recovered_status.items() if key not in {"error", "traceback", "failed_at_utc"}},
             "state": "completed",
             "cpu_finalization_started_at_utc": started,
             "completed_at_utc": _utc_now(),
@@ -566,7 +592,7 @@ def finalize_run(run_name: str, *, calibrate: bool = True) -> dict[str, object]:
         return result
     except Exception as exc:
         failure = {
-            **status,
+            **recovered_status,
             "state": "cpu_finalization_failed",
             "cpu_finalization_started_at_utc": started,
             "failed_at_utc": _utc_now(),
