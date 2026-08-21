@@ -164,7 +164,8 @@ def _scalar(data: Any) -> str:
 
 
 def aggregate_prediction_files(
-    paths: Iterable[Path], *, partition: str, connectivity: int = 8
+    paths: Iterable[Path], *, partition: str, connectivity: int = 8,
+    include_geometries: bool = False,
 ) -> BuildingAggregation:
     """Aggregate pixel logits over reference-mask connected components.
 
@@ -177,7 +178,9 @@ def aggregate_prediction_files(
     targets: list[int] = []
     geometries: list[Any | None] = []
     crs_values: set[str] = set()
-    for path in sorted(paths):
+    ordered_paths = sorted(paths)
+    total_paths = len(ordered_paths)
+    for file_index, path in enumerate(ordered_paths, start=1):
         with np.load(path, allow_pickle=False) as saved:
             logits = np.asarray(saved["logits"], dtype=np.float64)
             mask = np.asarray(saved["mask"], dtype=np.int64)
@@ -188,7 +191,11 @@ def aggregate_prediction_files(
             raise ValueError(f"Invalid prediction artifact shapes in {path}: {logits.shape}, {mask.shape}")
         labels, count = ndimage.label((mask > 0) & (mask != 255), structure=structure)
         geometry_by_label: dict[int, Any] = {}
-        if crs and bounds.size == 4:
+        # Calibration only consumes logits and reference-component labels.  Do
+        # not raster-vectorize every component unless a caller explicitly
+        # needs geometries: on a CPU finalizer this otherwise dominates time
+        # without changing any calibration metric or saved prediction table.
+        if include_geometries and crs and bounds.size == 4:
             from rasterio.features import shapes
             from rasterio.transform import from_bounds
             from shapely.geometry import shape
@@ -223,6 +230,12 @@ def aggregate_prediction_files(
             vectors.append(vector)
             targets.append(target)
             geometries.append(geometry_by_label.get(component_id))
+        if file_index == 1 or file_index % 25 == 0 or file_index == total_paths:
+            print(
+                f"[calibration] {partition}: aggregated {file_index}/{total_paths} tiles "
+                f"({len(rows):,} buildings)",
+                flush=True,
+            )
     if not rows:
         raise ValueError(f"No building components found in {partition} predictions")
     return BuildingAggregation(
