@@ -56,25 +56,34 @@ The normal training command runs that same safe bootstrap automatically. Use
 
 ## Launch and monitor
 
-The command prints live batch/epoch output in the terminal and mirrors every
-line to a durable `run.log` in the results Volume. At every completed epoch it
-commits the Volume, so the latest completed checkpoint and log are not
-dependent on Modal container lifetime.
+Launch GPU work detached. This is required for long jobs: an attached
+`modal run` is cancelled if the terminal, VS Code task, or local client
+disconnects. The command prints a Modal App URL; use that URL or `modal app
+logs` for live batch/epoch output. Every line is also mirrored to a durable
+`run.log` in the results Volume. At every completed epoch it commits the
+Volume, so the latest completed checkpoint and log are not dependent on
+container lifetime.
 
 ```bash
-uv run --group modal modal run remote/modal_cross_disaster.py --epochs 30 --batch-size 4 --workers 2
+uv run --group modal modal run --detach remote/modal_cross_disaster.py --epochs 30 --batch-size 4 --workers 2
 ```
 
 Give an explicit unique name when you want a memorable output directory:
 
 ```bash
-uv run --group modal modal run remote/modal_cross_disaster.py \
+uv run --group modal modal run --detach remote/modal_cross_disaster.py \
   --run-name unet-standard-30e-l40s --epochs 30 --batch-size 4 --workers 2
 ```
 
 The first launch creates `prepared/` once. Later launches reuse its immutable
 splits and skip preparation. `--force-prepare` is only for a deliberate split
 regeneration.
+
+Monitor a detached run with the App ID printed at launch:
+
+```bash
+uv run --group modal modal app logs <app-id> --tail 100 --timestamps
+```
 
 ## Retrieve outputs
 
